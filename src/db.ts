@@ -546,7 +546,7 @@ export function initDatabase(): void {
     })();
   }
 
-  const SCHEMA_VERSION = '20';
+  const SCHEMA_VERSION = '21';
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
