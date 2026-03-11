@@ -1430,7 +1430,10 @@ function escapeXml(s: string): string {
 function formatMessages(messages: NewMessage[], isShared = false): string {
   const lines = messages.map((m) => {
     const content = isShared ? `[${m.sender_name}] ${m.content}` : m.content;
-    return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(content)}</message>`;
+    const sourceJid = m.source_jid || m.chat_jid;
+    const sourceGroup = getChannelType(sourceJid) ? getRegisteredGroup(sourceJid) : null;
+    const sourceAttr = sourceGroup?.name ? ` source="${escapeXml(sourceGroup.name)}"` : '';
+    return `<message sender="${escapeXml(m.sender_name)}"${sourceAttr} time="${m.timestamp}">${escapeXml(content)}</message>`;
   });
   return `<messages>\n${lines.join('\n')}\n</messages>`;
 }
