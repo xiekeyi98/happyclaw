@@ -81,6 +81,8 @@ export interface SystemSettings {
   billingCurrency: string;
   billingCurrencyRate: number;
   memoryQueryTimeout: number;
+  memoryGlobalSleepTimeout: number;
+  memorySendTimeout: number;
 }
 
 export type SettingsTab = 'claude' | 'registration' | 'appearance' | 'system' | 'profile' | 'my-channels' | 'security' | 'groups' | 'memory' | 'skills' | 'mcp-servers' | 'users' | 'about' | 'bindings';

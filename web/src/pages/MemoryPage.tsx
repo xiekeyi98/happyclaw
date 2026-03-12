@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, BookOpen, Download, Loader2, Moon, Play, RefreshCw, Save } from 'lucide-react';
+import { ArrowLeft, BookOpen, ChevronDown, ChevronRight, Download, Loader2, Moon, Play, RefreshCw, Save, Settings } from 'lucide-react';
 import { api } from '../api/client';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -96,6 +96,15 @@ export function MemoryPage() {
   } | null>(null);
   const [triggeringWrapup, setTriggeringWrapup] = useState(false);
   const [triggeringGlobalSleep, setTriggeringGlobalSleep] = useState(false);
+
+  const [showTimeouts, setShowTimeouts] = useState(false);
+  const [timeoutValues, setTimeoutValues] = useState<{
+    memoryQueryTimeout: number;
+    memoryGlobalSleepTimeout: number;
+    memorySendTimeout: number;
+  } | null>(null);
+  const [timeoutLoading, setTimeoutLoading] = useState(false);
+  const [timeoutSaving, setTimeoutSaving] = useState(false);
 
   const isMobile = useMediaQuery('(max-width: 1023px)');
   const [showContent, setShowContent] = useState(false);
@@ -285,6 +294,50 @@ export function MemoryPage() {
       setError(getErrorMessage(err, '深度整理失败'));
     } finally {
       setTriggeringGlobalSleep(false);
+    }
+  };
+
+  const loadTimeoutSettings = useCallback(async () => {
+    setTimeoutLoading(true);
+    try {
+      const data = await api.get<{
+        memoryQueryTimeout: number;
+        memoryGlobalSleepTimeout: number;
+        memorySendTimeout: number;
+      }>('/api/config/system');
+      setTimeoutValues({
+        memoryQueryTimeout: data.memoryQueryTimeout,
+        memoryGlobalSleepTimeout: data.memoryGlobalSleepTimeout,
+        memorySendTimeout: data.memorySendTimeout,
+      });
+    } catch {
+      // ignore
+    } finally {
+      setTimeoutLoading(false);
+    }
+  }, []);
+
+  const handleSaveTimeouts = async () => {
+    if (!timeoutValues) return;
+    setTimeoutSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const data = await api.put<{
+        memoryQueryTimeout: number;
+        memoryGlobalSleepTimeout: number;
+        memorySendTimeout: number;
+      }>('/api/config/system', timeoutValues);
+      setTimeoutValues({
+        memoryQueryTimeout: data.memoryQueryTimeout,
+        memoryGlobalSleepTimeout: data.memoryGlobalSleepTimeout,
+        memorySendTimeout: data.memorySendTimeout,
+      });
+      setNotice('超时设置已保存');
+    } catch (err) {
+      setError(getErrorMessage(err, '保存超时设置失败'));
+    } finally {
+      setTimeoutSaving(false);
     }
   };
 
@@ -502,6 +555,108 @@ export function MemoryPage() {
                       </div>
                     </div>
                   )}
+
+                  {/* Timeout settings */}
+                  <div className="rounded-lg border border-border overflow-hidden">
+                    <button
+                      onClick={() => {
+                        const next = !showTimeouts;
+                        setShowTimeouts(next);
+                        if (next && !timeoutValues) loadTimeoutSettings();
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 bg-muted/30 hover:bg-muted text-xs font-medium text-foreground transition-colors"
+                    >
+                      {showTimeouts ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      <Settings className="w-3.5 h-3.5" />
+                      超时设置
+                    </button>
+                    {showTimeouts && (
+                      <div className="px-3 py-3 space-y-3">
+                        {timeoutLoading ? (
+                          <div className="flex items-center justify-center py-2">
+                            <Loader2 className="w-4 h-4 animate-spin text-slate-400" />
+                          </div>
+                        ) : timeoutValues ? (
+                          <>
+                            <div>
+                              <label className="block text-xs font-medium text-slate-600 mb-1">
+                                记忆查询超时
+                              </label>
+                              <div className="flex items-center gap-2">
+                                <Input
+                                  type="number"
+                                  value={Math.round(timeoutValues.memoryQueryTimeout / 1000)}
+                                  onChange={(e) => {
+                                    const v = parseInt(e.target.value, 10);
+                                    if (Number.isFinite(v)) {
+                                      setTimeoutValues((prev) => prev ? { ...prev, memoryQueryTimeout: v * 1000 } : prev);
+                                    }
+                                  }}
+                                  min={10}
+                                  max={300}
+                                  step={5}
+                                  className="max-w-24 text-xs"
+                                />
+                                <span className="text-xs text-slate-400">秒（10-300）</span>
+                              </div>
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-slate-600 mb-1">
+                                会话整理超时
+                              </label>
+                              <div className="flex items-center gap-2">
+                                <Input
+                                  type="number"
+                                  value={Math.round(timeoutValues.memorySendTimeout / 1000)}
+                                  onChange={(e) => {
+                                    const v = parseInt(e.target.value, 10);
+                                    if (Number.isFinite(v)) {
+                                      setTimeoutValues((prev) => prev ? { ...prev, memorySendTimeout: v * 1000 } : prev);
+                                    }
+                                  }}
+                                  min={30}
+                                  max={300}
+                                  step={10}
+                                  className="max-w-24 text-xs"
+                                />
+                                <span className="text-xs text-slate-400">秒（30-300）</span>
+                              </div>
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-slate-600 mb-1">
+                                深度整理超时
+                              </label>
+                              <div className="flex items-center gap-2">
+                                <Input
+                                  type="number"
+                                  value={Math.round(timeoutValues.memoryGlobalSleepTimeout / 1000)}
+                                  onChange={(e) => {
+                                    const v = parseInt(e.target.value, 10);
+                                    if (Number.isFinite(v)) {
+                                      setTimeoutValues((prev) => prev ? { ...prev, memoryGlobalSleepTimeout: v * 1000 } : prev);
+                                    }
+                                  }}
+                                  min={60}
+                                  max={600}
+                                  step={30}
+                                  className="max-w-24 text-xs"
+                                />
+                                <span className="text-xs text-slate-400">秒（60-600）</span>
+                              </div>
+                            </div>
+                            <Button
+                              size="sm"
+                              onClick={handleSaveTimeouts}
+                              disabled={timeoutSaving}
+                            >
+                              {timeoutSaving && <Loader2 className="size-3.5 animate-spin" />}
+                              保存超时设置
+                            </Button>
+                          </>
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
