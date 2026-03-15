@@ -48,6 +48,20 @@ const IPC_INPUT_DIR = path.join(WORKSPACE_IPC, 'input');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
 
+// Track recently seen IM channels from IPC messages (non-web sources)
+// Used to inject a routing reminder after context compaction
+const recentImChannels = new Set<string>();
+
+function extractSourceChannels(text: string): void {
+  const matches = text.matchAll(/source="([^"]+)"/g);
+  for (const m of matches) {
+    const source = m[1];
+    if (!source.startsWith('web:')) {
+      recentImChannels.add(source);
+    }
+  }
+}
+
 let currentPermissionMode: PermissionMode = 'bypassPermissions';
 
 const DEFAULT_ALLOWED_TOOLS = [
@@ -550,6 +564,8 @@ function waitForIpcMessage(): Promise<{ text: string; images?: Array<{ data: str
         // 合并多条消息的文本和图片
         const combinedText = messages.map((m) => m.text).join('\n');
         const allImages = messages.flatMap((m) => m.images || []);
+        // Track IM channels for post-compaction routing reminder
+        extractSourceChannels(combinedText);
         log(`Idle IPC pickup: ${messages.length} message(s), ${combinedText.length} chars`);
         // Emit acknowledgement so host can track IPC delivery (mirrors pollIpcDuringQuery)
         writeOutput({ status: 'stream', result: null, streamEvent: { eventType: 'status', statusText: 'ipc_message_received' } });
@@ -682,6 +698,8 @@ async function runQuery(
   images?: Array<{ data: string; mimeType?: string }>,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; contextOverflow?: boolean; unrecoverableTranscriptError?: boolean; interruptedDuringQuery: boolean; sessionResumeFailed?: boolean }> {
   const stream = new MessageStream();
+  // Track IM channels from initial prompt
+  extractSourceChannels(prompt);
   const initialRejected = stream.push(prompt, images);
   const emit = (output: ContainerOutput): void => {
     if (emitOutput) writeOutput(output);
@@ -753,6 +771,8 @@ async function runQuery(
     }
     for (const msg of messages) {
       log(`Piping IPC message into active query (${msg.text.length} chars, ${msg.images?.length || 0} images)`);
+      // Track IM channels for post-compaction routing reminder
+      extractSourceChannels(msg.text);
       // Emit acknowledgement so host can track IPC delivery
       emit({ status: 'stream', result: null, streamEvent: { eventType: 'status', statusText: 'ipc_message_received' } });
       const rejected = stream.push(msg.text, msg.images);
@@ -849,10 +869,11 @@ async function runQuery(
     '用户的消息可能来自不同渠道（Web、飞书、Telegram、QQ）。每条消息的 `source` 属性标识了来源渠道。',
     '',
     '- **你的文字输出（stdout）仅显示在 Web 界面**，不会自动发送到任何 IM 渠道。',
-    '- 要向 IM 渠道发送消息，使用 `send_message` 工具并指定 `channel` 参数（值取自消息的 `source` 属性）。',
+    '- 要向 IM 渠道发送消息，**必须**使用 `send_message` 工具并指定 `channel` 参数（值取自消息的 `source` 属性）。',
     '- 发送图片/文件到 IM 时，`send_image` / `send_file` 的 `channel` 参数为必填。',
     '- 如果所有消息都来自 Web（没有 source 属性），正常回复即可，无需调用 send_message。',
     '- 同一批消息可能来自不同渠道，根据需要分别回复。',
+    '- **上下文压缩后**：之前的渠道上下文可能丢失，但 `source` 属性仍然存在于每条消息中。压缩后请务必检查最新消息的 `source` 属性，确保通过 `send_message` 回复 IM 用户。',
   ].join('\n');
 
   const systemPromptAppend = [
@@ -953,6 +974,24 @@ async function runQuery(
     if (message.type === 'system' && message.subtype === 'init') {
       newSessionId = message.session_id;
       log(`Session initialized: ${newSessionId}`);
+    }
+
+    // After context compaction, inject a routing reminder so the agent
+    // doesn't forget to use send_message for IM channels.
+    // The reminder arrives as a user message in the NEXT turn.
+    if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
+      const channels = [...recentImChannels];
+      if (channels.length > 0) {
+        log(`Context compacted, injecting routing reminder for channels: ${channels.join(', ')}`);
+        stream.push(
+          `[系统提示] 上下文已压缩。重要提醒：你的文字输出（stdout）仅在 Web 界面可见。` +
+          `你近期与以下 IM 渠道有活跃对话：${channels.join('、')}。` +
+          `回复这些渠道的用户时，必须使用 send_message(channel="渠道值") 工具，否则他们收不到你的消息。` +
+          `请检查消息的 source 属性确定 channel 值。`,
+        );
+      } else {
+        log('Context compacted, no IM channels tracked');
+      }
     }
 
     if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
