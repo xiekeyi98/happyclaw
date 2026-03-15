@@ -1010,6 +1010,9 @@ async function runQuery(
       }
 
       const { effectiveResult } = processor.processResult(textResult);
+      if (!effectiveResult && resultCount > 0) {
+        log(`Warning: query produced empty result (no text, no tool output). Result #${resultCount}, messages: ${messageCount}`);
+      }
       emit({
         status: 'success',
         result: effectiveResult,

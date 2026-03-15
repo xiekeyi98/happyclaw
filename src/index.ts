@@ -173,38 +173,54 @@ const terminalWarmupInFlight = new Set<string>();
 // "ipc_message_received".  If no ack arrives within IPC_DELIVERY_TIMEOUT_MS the
 // host logs a warning — this helped us diagnose the "swallowed message" bug
 // where the SDK silently dropped an IPC-injected query.
+//
+// Uses a counter + per-entry timers so rapid-fire messages to the same JID
+// don't silently cancel each other's watchdogs.
 const IPC_DELIVERY_TIMEOUT_MS = 120_000;
 const pendingIpcDeliveries = new Map<
   string,
-  { timestamp: number; timer: ReturnType<typeof setTimeout> }
+  { count: number; timers: ReturnType<typeof setTimeout>[]; firstSentAt: number }
 >();
 function trackIpcDelivery(chatJid: string): void {
   const existing = pendingIpcDeliveries.get(chatJid);
-  if (existing) clearTimeout(existing.timer);
+  const now = Date.now();
   const timer = setTimeout(() => {
-    pendingIpcDeliveries.delete(chatJid);
-    logger.warn(
-      { chatJid, timeoutMs: IPC_DELIVERY_TIMEOUT_MS },
-      'IPC message not acknowledged by agent — possible SDK hang or dropped query',
-    );
+    const entry = pendingIpcDeliveries.get(chatJid);
+    if (entry) {
+      const idx = entry.timers.indexOf(timer);
+      if (idx >= 0) entry.timers.splice(idx, 1);
+      entry.count = Math.max(0, entry.count - 1);
+      logger.warn(
+        { chatJid, timeoutMs: IPC_DELIVERY_TIMEOUT_MS },
+        'IPC message not acknowledged by agent — possible SDK hang or dropped query',
+      );
+      if (entry.count <= 0) pendingIpcDeliveries.delete(chatJid);
+    }
   }, IPC_DELIVERY_TIMEOUT_MS);
-  pendingIpcDeliveries.set(chatJid, { timestamp: Date.now(), timer });
+  if (existing) {
+    existing.count++;
+    existing.timers.push(timer);
+  } else {
+    pendingIpcDeliveries.set(chatJid, { count: 1, timers: [timer], firstSentAt: now });
+  }
 }
 function ackIpcDelivery(chatJid: string): void {
-  const pending = pendingIpcDeliveries.get(chatJid);
-  if (pending) {
-    clearTimeout(pending.timer);
-    pendingIpcDeliveries.delete(chatJid);
+  const entry = pendingIpcDeliveries.get(chatJid);
+  if (entry && entry.count > 0) {
+    entry.count--;
+    const timer = entry.timers.shift();
+    if (timer) clearTimeout(timer);
     logger.info(
-      { chatJid, latencyMs: Date.now() - pending.timestamp },
+      { chatJid, pending: entry.count, latencyMs: Date.now() - entry.firstSentAt },
       'IPC delivery acknowledged by agent',
     );
+    if (entry.count <= 0) pendingIpcDeliveries.delete(chatJid);
   }
 }
 function clearIpcDeliveryTracker(chatJid: string): void {
-  const pending = pendingIpcDeliveries.get(chatJid);
-  if (pending) {
-    clearTimeout(pending.timer);
+  const entry = pendingIpcDeliveries.get(chatJid);
+  if (entry) {
+    for (const t of entry.timers) clearTimeout(t);
     pendingIpcDeliveries.delete(chatJid);
   }
 }
