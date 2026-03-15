@@ -255,13 +255,13 @@ function buildVolumeMounts(
       mounts.push({
         hostPath: userSkillsDir,
         containerPath: '/workspace/user-skills',
-        readonly: true,
+        readonly: false,
       });
     }
   } else {
-    // 按需挂载：仅挂载选中的 skill 子目录
+    // 按需挂载：仅挂载选中的 skill 子目录（项目级），用户级整目录挂载（可写，允许创建新 skill）
     const selectedSet = new Set(selectedSkills);
-    // 项目级 skills
+    // 项目级 skills：按需挂载
     if (fs.existsSync(projectSkillsDir)) {
       for (const name of selectedSet) {
         if (!/^[\w\-]+$/.test(name)) continue; // 防御性跳过非法名称
@@ -275,19 +275,13 @@ function buildVolumeMounts(
         }
       }
     }
-    // 用户级 skills
+    // 用户级 skills：整目录挂载（可写，agent 需要创建新 skill 目录）
     if (userSkillsDir) {
-      for (const name of selectedSet) {
-        if (!/^[\w\-]+$/.test(name)) continue; // 防御性跳过非法名称
-        const skillPath = path.join(userSkillsDir, name);
-        if (fs.existsSync(skillPath) && fs.statSync(skillPath).isDirectory()) {
-          mounts.push({
-            hostPath: skillPath,
-            containerPath: `/workspace/user-skills/${name}`,
-            readonly: true,
-          });
-        }
-      }
+      mounts.push({
+        hostPath: userSkillsDir,
+        containerPath: '/workspace/user-skills',
+        readonly: false,
+      });
     }
   }
 
@@ -944,6 +938,9 @@ export async function runHostAgent(
     memoryFolder,
   );
   hostEnv['HAPPYCLAW_WORKSPACE_IPC'] = groupIpcDir;
+  if (ownerId) {
+    hostEnv['HAPPYCLAW_SKILLS_DIR'] = path.join(DATA_DIR, 'skills', ownerId);
+  }
   hostEnv['CLAUDE_CONFIG_DIR'] = groupSessionsDir;
 
   // Memory Agent env vars
