@@ -1255,6 +1255,20 @@ export function broadcastStreamEvent(
   safeBroadcast(msg, isHostGroupJid(chatJid), allowedUserIds);
 }
 
+export function broadcastBlocksFinalized(
+  chatJid: string,
+  messageId: string,
+  blocks: import('./streaming-blocks.js').StreamingBlock[],
+): void {
+  const jid = normalizeHomeJid(chatJid);
+  const allowedUserIds = getGroupAllowedUserIds(chatJid);
+  safeBroadcast(
+    { type: 'blocks_finalized', chatJid: jid, messageId, blocks } as WsMessageOut,
+    isHostGroupJid(chatJid),
+    allowedUserIds,
+  );
+}
+
 export function broadcastBillingUpdate(
   userId: string,
   usage: import('./types.js').BillingAccessResult,

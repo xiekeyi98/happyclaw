@@ -49,6 +49,7 @@ const quickPrompts = [
 export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrigger, groupJid, isWaiting, onInterrupt, agents, onAgentClick, agentId, onSend }: MessageListProps) {
   const { mode: displayMode } = useDisplayMode();
   const thinkingCache = useChatStore(s => s.thinkingCache ?? {});
+  const blocksCache = useChatStore(s => s.blocksCache ?? {});
   const isShared = useChatStore(s => !!s.groups[groupJid ?? '']?.is_shared);
   const currentUser = useAuthStore(s => s.user);
   const appearance = useAuthStore(s => s.appearance);
@@ -340,7 +341,7 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
                 ref={virtualizer.measureElement}
                 data-index={virtualItem.index}
               >
-                <MessageBubble message={message} showTime={showTime} thinkingContent={thinkingCache[message.id]} isShared={isShared} />
+                <MessageBubble message={message} showTime={showTime} thinkingContent={thinkingCache[message.id]} blocksContent={blocksCache[message.id]} isShared={isShared} />
               </div>
             );
           })}

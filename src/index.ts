@@ -137,9 +137,11 @@ import {
   broadcastStreamEvent,
   broadcastAgentStatus,
   broadcastBillingUpdate,
+  broadcastBlocksFinalized,
   shutdownTerminals,
   shutdownWebServer,
 } from './web.js';
+import { streamingBlocksManager } from './streaming-blocks.js';
 import { verifyPairingCode } from './telegram-pairing.js';
 import {
   MemoryAgentManager,
@@ -1624,6 +1626,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   }
 
+  // 新一轮从干净状态开始
+  streamingBlocksManager.reset(group.folder);
+
   const output = await runAgent(
     effectiveGroup,
     prompt,
@@ -1633,6 +1638,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         // 流式事件处理 - 广播 WebSocket + 持久化 SDK Task 生命周期到 DB
         if (result.status === 'stream' && result.streamEvent) {
           broadcastStreamEvent(chatJid, result.streamEvent);
+          // 累积 streaming blocks（后端持久化，前端可随时查询）
+          streamingBlocksManager.getOrCreate(group.folder).feed(result.streamEvent);
 
           // IPC delivery acknowledgement from agent-runner
           const se = result.streamEvent;
@@ -1886,6 +1893,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           }
           // Only reset idle timer on actual results, not session-update markers (result: null)
           resetIdleTimer();
+
+          // Finalize streaming blocks for this round and broadcast to clients
+          const finalBlocks = streamingBlocksManager.finalize(group.folder);
+          if (finalBlocks.length > 0 && lastReplyMsgId) {
+            broadcastBlocksFinalized(chatJid, lastReplyMsgId, finalBlocks);
+          }
         }
 
         if (result.status === 'error') {
@@ -1903,6 +1916,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   await setTyping(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
   clearIpcDeliveryTracker(chatJid);
+  streamingBlocksManager.remove(group.folder);
 
   // 不可恢复的转录错误（如超大图片/MIME 错配被固化在会话历史中）：无论是否已有回复，都必须重置会话
   const errorForReset = [lastError, output.error].filter(Boolean).join(' ');
