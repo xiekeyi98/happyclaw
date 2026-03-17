@@ -759,6 +759,21 @@ export class StreamEventProcessor {
       this.flushBuffers();
       this.seenTextualResult = true;
     }
+
+    // Result 表示当前 turn 已结束，清理残留的 activeTopLevelToolUseId。
+    // 如果不清理，activity timeout 会误认为工具仍在执行中而无限延期，
+    // 导致 for-await 循环卡死无法退出（2026-03-17 事故根因）。
+    if (this.activeTopLevelToolUseId) {
+      if (!this.taskToolUseIds.has(this.activeTopLevelToolUseId)) {
+        this.emit({
+          status: 'stream', result: null,
+          streamEvent: { eventType: 'tool_use_end', toolUseId: this.activeTopLevelToolUseId },
+        });
+      }
+      this.activeTopLevelToolUseId = null;
+      this.activeSkillToolUseId = null;
+    }
+
     // Use fullTextAccumulator if it's more complete than SDK's result
     const effectiveResult = this.fullTextAccumulator.length > (textResult?.length || 0)
       ? this.fullTextAccumulator
