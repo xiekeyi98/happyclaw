@@ -48,6 +48,7 @@ import browseRoutes from './routes/browse.js';
 import agentRoutes from './routes/agents.js';
 import mcpServersRoutes from './routes/mcp-servers.js';
 import logsRoutes from './routes/logs.js';
+import turnsRoutes from './routes/turns.js';
 import agentDefinitionsRoutes from './routes/agent-definitions.js';
 import memoryAgentInternalRoutes from './routes/memory-agent.js';
 import { usage as usageRoutes } from './routes/usage.js';
@@ -170,6 +171,7 @@ app.route('/api/browse', browseRoutes);
 app.route('/api/mcp-servers', mcpServersRoutes);
 app.route('/api/groups', agentRoutes); // Agent routes under /api/groups/:jid/agents
 app.route('/api/logs', logsRoutes);
+app.route('/api/groups', turnsRoutes); // Turn routes under /api/groups/:jid/turns
 app.route('/api/agent-definitions', agentDefinitionsRoutes);
 app.route('/api', monitorRoutes);
 app.route('/api/usage', usageRoutes);
@@ -687,9 +689,14 @@ function setupWebSocket(server: any): WebSocketServer {
             if (targetGroup) {
               try {
                 // Export transcripts before reset (for memory system)
-                await deps.triggerSessionWrapup?.(targetGroup.folder).catch((err) => {
-                  logger.warn({ chatJid, err }, 'Pre-clear transcript export failed (non-blocking)');
-                });
+                await deps
+                  .triggerSessionWrapup?.(targetGroup.folder)
+                  .catch((err) => {
+                    logger.warn(
+                      { chatJid, err },
+                      'Pre-clear transcript export failed (non-blocking)',
+                    );
+                  });
                 await executeSessionReset(chatJid, targetGroup.folder, {
                   queue: deps.queue,
                   sessions: deps.getSessions(),
@@ -1277,10 +1284,22 @@ export function broadcastBlocksFinalized(
   const jid = normalizeHomeJid(chatJid);
   const allowedUserIds = getGroupAllowedUserIds(chatJid);
   safeBroadcast(
-    { type: 'blocks_finalized', chatJid: jid, messageId, blocks } as WsMessageOut,
+    {
+      type: 'blocks_finalized',
+      chatJid: jid,
+      messageId,
+      blocks,
+    } as WsMessageOut,
     isHostGroupJid(chatJid),
     allowedUserIds,
   );
+}
+
+export function broadcastTurnEvent(chatJid: string, event: StreamEvent): void {
+  const jid = normalizeHomeJid(chatJid);
+  const allowedUserIds = getGroupAllowedUserIds(chatJid);
+  const msg: WsMessageOut = { type: 'stream_event', chatJid: jid, event };
+  safeBroadcast(msg, isHostGroupJid(chatJid), allowedUserIds);
 }
 
 export function broadcastBillingUpdate(

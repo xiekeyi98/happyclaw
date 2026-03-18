@@ -5,6 +5,7 @@ import { useAuthStore } from '../../stores/auth';
 import type { AgentInfo } from '../../types';
 import { MessageBubble } from './MessageBubble';
 import { StreamingDisplay } from './StreamingDisplay';
+import { TurnIndicator } from './TurnIndicator';
 import { AgentStatusCard } from './AgentStatusCard';
 import { EmojiAvatar } from '../common/EmojiAvatar';
 import { Loader2, ChevronUp, ChevronDown, AlertTriangle, Square } from 'lucide-react';
@@ -387,7 +388,10 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
         )}
 
         {groupJid && !agentId && (
-          <StreamingDisplay groupJid={groupJid} isWaiting={!!isWaiting} />
+          <>
+            <TurnIndicator chatJid={groupJid} />
+            <StreamingDisplay groupJid={groupJid} isWaiting={!!isWaiting} />
+          </>
         )}
         {groupJid && agentId && (
           <StreamingDisplay groupJid={groupJid} isWaiting={!!isWaiting} agentId={agentId} />

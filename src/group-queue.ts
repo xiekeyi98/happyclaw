@@ -155,7 +155,7 @@ export class GroupQueue {
     const isHost = this.isHostMode(groupJid);
     const systemCapacity = isHost
       ? this.activeHostProcessCount <
-          getSystemSettings().maxConcurrentHostProcesses
+        getSystemSettings().maxConcurrentHostProcesses
       : this.activeContainerCount < getSystemSettings().maxConcurrentContainers;
     if (!systemCapacity) return false;
 
@@ -372,6 +372,29 @@ export class GroupQueue {
       fs.writeFileSync(path.join(inputDir, '_close'), '');
     } catch {
       // ignore
+    }
+  }
+
+  /**
+   * Signal the active container to drain: finish current query then exit.
+   * Unlike closeStdin which signals immediate exit, drain waits for the query to complete.
+   * Used for turn boundaries when a different channel's message needs processing.
+   */
+  sendDrain(groupJid: string): boolean {
+    const state = this.resolveActiveState(groupJid);
+    if (!state) return false;
+
+    const inputDir = this.resolveIpcInputDir(state);
+    try {
+      fs.mkdirSync(inputDir, { recursive: true });
+      fs.writeFileSync(path.join(inputDir, '_drain'), '');
+      logger.info(
+        { groupJid, groupFolder: state.groupFolder },
+        'Drain sentinel written',
+      );
+      return true;
+    } catch {
+      return false;
     }
   }
 

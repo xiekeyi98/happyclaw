@@ -46,6 +46,7 @@ const CLAUDE_MODEL = process.env.HAPPYCLAW_MODEL || process.env.ANTHROPIC_MODEL 
 
 const IPC_INPUT_DIR = path.join(WORKSPACE_IPC, 'input');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
+const IPC_INPUT_DRAIN_SENTINEL = path.join(IPC_INPUT_DIR, '_drain');
 const IPC_POLL_MS = 500;
 
 // Track recently seen IM channels from IPC messages (non-web sources)
@@ -465,6 +466,18 @@ function shouldClose(): boolean {
   return false;
 }
 
+/**
+ * Check for _drain sentinel.
+ * Unlike _close (immediate exit), _drain means "finish current query then exit".
+ */
+function shouldDrain(): boolean {
+  if (fs.existsSync(IPC_INPUT_DRAIN_SENTINEL)) {
+    try { fs.unlinkSync(IPC_INPUT_DRAIN_SENTINEL); } catch { /* ignore */ }
+    return true;
+  }
+  return false;
+}
+
 const IPC_INPUT_INTERRUPT_SENTINEL = path.join(IPC_INPUT_DIR, '_interrupt');
 const INTERRUPT_GRACE_WINDOW_MS = 10_000;
 let lastInterruptRequestedAt = 0;
@@ -548,6 +561,12 @@ function waitForIpcMessage(): Promise<{ text: string; images?: Array<{ data: str
   return new Promise((resolve) => {
     const poll = () => {
       if (shouldClose()) {
+        resolve(null);
+        return;
+      }
+      if (shouldDrain()) {
+        log('Drain sentinel received while idle, exiting for turn boundary');
+        writeOutput({ status: 'drained', result: null, newSessionId: undefined });
         resolve(null);
         return;
       }
@@ -1258,6 +1277,7 @@ async function main(): Promise<void> {
 
   // Clean up stale sentinels from previous container runs
   try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
+  try { fs.unlinkSync(IPC_INPUT_DRAIN_SENTINEL); } catch { /* ignore */ }
   try { fs.unlinkSync(IPC_INPUT_INTERRUPT_SENTINEL); } catch { /* ignore */ }
 
   // Build initial prompt (drain any pending IPC messages too)
@@ -1392,15 +1412,23 @@ async function main(): Promise<void> {
         continue;
       }
 
+      // Check for _drain sentinel: finish current query then exit for turn boundary.
+      // Unlike _close, _drain waits for the query to complete naturally.
+      if (shouldDrain()) {
+        log('Drain sentinel detected, exiting for turn boundary');
+        writeOutput({ status: 'drained', result: null, newSessionId: sessionId });
+        break;
+      }
+
       // Emit session update so host can track it
       writeOutput({ status: 'success', result: null, newSessionId: sessionId });
 
       log('Query ended, waiting for next IPC message...');
 
-      // Wait for the next message or _close sentinel
+      // Wait for the next message or _close/_drain sentinel
       const nextMessage = await waitForIpcMessage();
       if (nextMessage === null) {
-        log('Close sentinel received, exiting');
+        log('Close/drain sentinel received, exiting');
         break;
       }
 

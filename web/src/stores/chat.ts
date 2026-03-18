@@ -153,6 +153,9 @@ interface ChatState {
   agentHasMore: Record<string, boolean>;             // agentId → has more messages
   blocksCache: Record<string, StreamingBlock[]>;     // messageId → finalized blocks
   runnerState: Record<string, { state: string; detail?: string }>;
+  // Turn state (populated from turn_started/turn_completed stream events)
+  activeTurn: Record<string, { turnId: string; channel: string; messageCount: number; startedAt: number } | null>;
+  pendingBuffer: Record<string, Record<string, number>>;  // chatJid → channel → pending count
   handleRunnerState: (chatJid: string, state: string, detail?: string) => void;
   loadGroups: () => Promise<void>;
   selectGroup: (jid: string) => void;
@@ -592,6 +595,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   agentHasMore: {},
   blocksCache: {},
   runnerState: {},
+  activeTurn: {},
+  pendingBuffer: {},
 
   handleRunnerState: (chatJid, state, detail) => {
     set((s) => ({
@@ -1080,6 +1085,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
   handleStreamEvent: (chatJid, event, agentId?) => {
     // Skip while clearHistory is in-flight
     if (get().clearing[chatJid]) return;
+
+    // Turn lifecycle events (from host process, not agent-runner)
+    if (event.eventType === 'turn_started' && event.turnId) {
+      set((s) => ({
+        activeTurn: {
+          ...s.activeTurn,
+          [chatJid]: {
+            turnId: event.turnId!,
+            channel: event.turnChannel || '',
+            messageCount: event.turnMessageCount || 0,
+            startedAt: Date.now(),
+          },
+        },
+      }));
+      return;
+    }
+    if (event.eventType === 'turn_completed' && event.turnId) {
+      set((s) => ({
+        activeTurn: { ...s.activeTurn, [chatJid]: null },
+      }));
+      return;
+    }
 
     // ① conversation agent（DB 持久化的）— 已有逻辑不变
     if (agentId) {
