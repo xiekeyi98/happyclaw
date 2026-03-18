@@ -26,6 +26,15 @@ export interface Message {
 import type { StreamEventType, StreamEvent } from '../stream-event.types';
 export type { StreamEventType, StreamEvent };
 
+export interface TurnInfo {
+  id: string;
+  channel: string;
+  messageIds: string[];
+  startedAt: string;
+  completedAt?: string;
+  status: string;
+}
+
 export interface StreamingTimelineEvent {
   id: string;
   timestamp: number;
@@ -156,6 +165,9 @@ interface ChatState {
   // Turn state (populated from turn_started/turn_completed stream events)
   activeTurn: Record<string, { turnId: string; channel: string; messageCount: number; startedAt: number } | null>;
   pendingBuffer: Record<string, Record<string, number>>;  // chatJid → channel → pending count
+  // Historical turn data (loaded from API)
+  turns: Record<string, TurnInfo[]>;  // jid → turns (chronological)
+  loadTurns: (jid: string) => Promise<void>;
   handleRunnerState: (chatJid: string, state: string, detail?: string) => void;
   loadGroups: () => Promise<void>;
   selectGroup: (jid: string) => void;
@@ -557,6 +569,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
   runnerState: {},
   activeTurn: {},
   pendingBuffer: {},
+  turns: {},
+
+  loadTurns: async (jid: string) => {
+    try {
+      const data = await api.get<{ turns: Array<{ id: string; chatJid: string; channel: string; messageIds: string[]; startedAt: string; completedAt: string; status: string }> }>(
+        `/api/groups/${encodeURIComponent(jid)}/turns?limit=200`
+      );
+      // API returns DESC order, reverse to chronological
+      const turns: TurnInfo[] = data.turns.map(t => ({
+        id: t.id,
+        channel: t.channel,
+        messageIds: t.messageIds,
+        startedAt: t.startedAt,
+        completedAt: t.completedAt,
+        status: t.status,
+      })).reverse();
+      set((s) => ({ turns: { ...s.turns, [jid]: turns } }));
+    } catch { /* non-critical, silently ignore */ }
+  },
 
   handleRunnerState: (chatJid, state, detail) => {
     if (state === 'idle') {
@@ -608,6 +639,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const state = get();
     if (!state.messages[jid]) {
       get().loadMessages(jid);
+    }
+    if (!state.turns[jid]) {
+      get().loadTurns(jid);
     }
   },
 
@@ -1075,6 +1109,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set((s) => ({
         activeTurn: { ...s.activeTurn, [chatJid]: null },
       }));
+      // Refresh turns to include the newly completed turn with full message_ids
+      get().loadTurns(chatJid);
       return;
     }
 

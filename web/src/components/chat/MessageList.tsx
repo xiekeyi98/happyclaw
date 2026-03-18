@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Message, useChatStore } from '../../stores/chat';
+import { Message, TurnInfo, useChatStore } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
 import type { AgentInfo } from '../../types';
 import { MessageBubble } from './MessageBubble';
@@ -38,6 +38,7 @@ type FlatItem =
   | { type: 'date'; content: string }
   | { type: 'divider'; content: string }
   | { type: 'error'; content: string }
+  | { type: 'turn_start'; content: TurnInfo }
   | { type: 'message'; content: Message };
 
 const quickPrompts = [
@@ -57,12 +58,25 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
   const aiEmoji = currentUser?.ai_avatar_emoji || appearance?.aiAvatarEmoji;
   const aiColor = currentUser?.ai_avatar_color || appearance?.aiAvatarColor;
   const aiImageUrl = currentUser?.ai_avatar_url;
+  const turns = useChatStore(s => s.turns[groupJid ?? '']);
   const parentRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [atTop, setAtTop] = useState(false);
   const prevMessageCount = useRef(messages.length);
 
-  // Compute flatMessages (with date headers) before virtualizer
+  // Build messageId → TurnInfo lookup
+  const turnByMessageId = useMemo(() => {
+    const map = new Map<string, TurnInfo>();
+    if (!turns) return map;
+    for (const turn of turns) {
+      for (const msgId of turn.messageIds) {
+        map.set(msgId, turn);
+      }
+    }
+    return map;
+  }, [turns]);
+
+  // Compute flatMessages (with date headers and turn boundaries) before virtualizer
   const flatMessages = useMemo<FlatItem[]>(() => {
     const grouped = messages.reduce((acc, msg) => {
       const date = new Date(msg.timestamp).toLocaleDateString('zh-CN', {
@@ -76,24 +90,39 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
     }, {} as Record<string, Message[]>);
 
     const items: FlatItem[] = [];
+    let currentTurnId: string | null = null;
+    let turnCount = 0;
+
     Object.entries(grouped).forEach(([date, msgs]) => {
       items.push({ type: 'date', content: date });
       msgs.forEach((msg) => {
         if (msg.sender === '__system__') {
           if (msg.content === 'context_reset') {
             items.push({ type: 'divider', content: '上下文已清除' });
+            // Reset turn tracking across context resets
+            currentTurnId = null;
+            turnCount = 0;
           } else if (msg.content.startsWith('agent_error:')) {
             items.push({ type: 'error', content: msg.content.slice('agent_error:'.length) });
           } else if (msg.content.startsWith('agent_max_retries:')) {
             items.push({ type: 'error', content: msg.content.slice('agent_max_retries:'.length) });
           }
         } else {
+          // Check for turn boundary (only on input messages, not agent replies)
+          const turn = turnByMessageId.get(msg.id);
+          if (turn && turn.id !== currentTurnId) {
+            currentTurnId = turn.id;
+            turnCount++;
+            if (turnCount > 1) {
+              items.push({ type: 'turn_start', content: turn });
+            }
+          }
           items.push({ type: 'message', content: msg });
         }
       });
     });
     return items;
-  }, [messages]);
+  }, [messages, turnByMessageId]);
 
   // Chat always starts at bottom — no scroll position restoration.
   // key={...} on <MessageList> guarantees a fresh mount on group/tab switch.
@@ -108,6 +137,7 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
         case 'date': return `date-${item.content}`;
         case 'divider': return `div-${index}`;
         case 'error': return `err-${index}`;
+        case 'turn_start': return `turn-${item.content.id}`;
         case 'message': return item.content.id;
       }
     },
@@ -118,6 +148,7 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
         case 'date': return 48;
         case 'divider':
         case 'error': return 56;
+        case 'turn_start': return 36;
         case 'message': {
           const len = item.content.content.length;
           if (item.content.is_from_me) {
@@ -320,6 +351,45 @@ export function MessageList({ messages, loading, hasMore, onLoadMore, scrollTrig
                       {item.content}
                     </span>
                     <div className="flex-1 border-t border-red-300" />
+                  </div>
+                </div>
+              );
+            }
+
+            if (item.type === 'turn_start') {
+              const turn = item.content;
+              const ch = turn.channel.startsWith('feishu:') ? '飞书'
+                : turn.channel.startsWith('telegram:') ? 'Telegram'
+                : turn.channel.startsWith('qq:') ? 'QQ'
+                : turn.channel.startsWith('web:') ? 'Web' : turn.channel;
+              let duration = '';
+              if (turn.startedAt && turn.completedAt) {
+                const ms = new Date(turn.completedAt).getTime() - new Date(turn.startedAt).getTime();
+                if (ms > 0) {
+                  const sec = Math.floor(ms / 1000);
+                  duration = sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${sec % 60}s`;
+                }
+              }
+              const label = [ch, turn.messageIds.length > 1 ? `${turn.messageIds.length} 条` : null, duration || null, turn.status !== 'completed' ? turn.status : null].filter(Boolean).join(' · ');
+              return (
+                <div
+                  key={virtualItem.key}
+                  ref={virtualizer.measureElement}
+                  data-index={virtualItem.index}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${virtualItem.start}px)`,
+                  }}
+                >
+                  <div className="flex items-center gap-2 my-3 px-4">
+                    <div className="flex-1 border-t border-dashed border-border" />
+                    <span className="text-[11px] text-muted-foreground/60 whitespace-nowrap">
+                      {label}
+                    </span>
+                    <div className="flex-1 border-t border-dashed border-border" />
                   </div>
                 </div>
               );
