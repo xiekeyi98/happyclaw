@@ -49,6 +49,7 @@ import {
   getTaskById,
   getHomeGroupByFolder,
   getUserHomeGroup,
+  getLastInboundMessage,
   initDatabase,
   isGroupShared,
   listUsers,
@@ -83,7 +84,7 @@ import {
 } from './db.js';
 // feishu.js deprecated exports are no longer needed; imManager handles all connections
 import { imManager } from './im-manager.js';
-import { getChannelType, extractChatId } from './im-channel.js';
+import { getChannelType, extractChatId, type IMSendOptions } from './im-channel.js';
 import { abortAllStreamingSessions } from './feishu-streaming-card.js';
 import {
   formatContextMessages,
@@ -154,6 +155,7 @@ import {
   exportTranscriptsForUser,
 } from './memory-agent.js';
 import { injectMemoryAgentDeps } from './routes/memory-agent.js';
+import { injectFeishuApiDeps } from './routes/feishu-api.js';
 import { injectMemoryDeps } from './routes/memory.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -173,6 +175,19 @@ const queue = new GroupQueue();
 const turnManager = new TurnManager();
 const EMPTY_CURSOR: MessageCursor = { rowid: 0 };
 const terminalWarmupInFlight = new Set<string>();
+
+/**
+ * Per-folder map of trigger messages: sourceJid → { id, sender } of the last
+ * inbound message from that IM channel in the current batch.
+ * Set by processGroupMessages when launching the agent, read by IPC handler
+ * to thread replies and resolve urgent targets accurately.
+ * This avoids querying DB for "last inbound" which may return a message
+ * the agent hasn't seen (arrived after agent started).
+ */
+const triggerMessagesByFolder = new Map<
+  string,
+  Map<string, { id: string; sender: string }>
+>();
 
 // IPC delivery watchdog: track piped messages awaiting agent acknowledgement.
 // When the agent-runner consumes an IPC message it emits a status stream_event
@@ -479,9 +494,10 @@ function sendImWithFailTracking(
   imJid: string,
   text: string,
   localImagePaths: string[],
+  options?: IMSendOptions,
 ): void {
   imManager
-    .sendMessage(imJid, text, localImagePaths)
+    .sendMessage(imJid, text, localImagePaths, options)
     .then(() => {
       imSendFailCounts.delete(imJid);
     })
@@ -1773,6 +1789,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   );
   broadcastRunnerState(chatJid, 'starting');
 
+  // Build per-sourceJid trigger message map so IPC handler can thread
+  // replies to the correct triggering message (not whatever DB says is latest).
+  const triggerMap = new Map<string, { id: string; sender: string }>();
+  for (const m of missedMessages) {
+    const srcJid = m.source_jid || m.chat_jid;
+    // Last message per source wins (chronological order)
+    triggerMap.set(srcJid, { id: m.id, sender: m.sender });
+  }
+  triggerMessagesByFolder.set(effectiveGroup.folder, triggerMap);
+
   let wasInterrupted = false;
   const output = await runAgent(
     effectiveGroup,
@@ -2253,29 +2279,79 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // leading to duplicate replies.
     const errorDetail = output.error || lastError || '未知错误';
 
+    // Resolve IM source for error forwarding
+    const errorSourceJid =
+      missedMessages[missedMessages.length - 1]?.source_jid || chatJid;
+    const errorImChannel = getChannelType(errorSourceJid)
+      ? errorSourceJid
+      : null;
+
     // 上下文溢出错误：跳过重试，提交游标，通知用户
     if (errorDetail.startsWith('context_overflow:')) {
       const overflowMsg = errorDetail.replace(/^context_overflow:\s*/, '');
       sendSystemMessage(chatJid, 'context_overflow', overflowMsg);
+      if (errorImChannel) {
+        sendImWithFailTracking(
+          errorImChannel,
+          `⚠️ 上下文溢出：${overflowMsg}`,
+          [],
+        );
+      }
       logger.warn(
         { group: group.name, error: overflowMsg },
         'Context overflow detected, skipping retry',
       );
       commitCursor();
+      triggerMessagesByFolder.delete(effectiveGroup.folder);
       return true;
     }
 
     sendSystemMessage(chatJid, 'agent_error', errorDetail);
+    // Forward agent errors to IM so users aren't left waiting in silence
+    if (errorImChannel) {
+      // Build card button for rate-limit errors linking to the usage page
+      const isRateLimit = /limit|rate.?limit|quota|resets/i.test(errorDetail);
+      const webPublicUrl = process.env.WEB_PUBLIC_URL;
+      const sendOpts: IMSendOptions = {};
+      if (isRateLimit && webPublicUrl) {
+        sendOpts.cardExtraElements = [
+          {
+            tag: 'action',
+            actions: [
+              {
+                tag: 'button',
+                text: { tag: 'plain_text', content: '📊 查看用量详情' },
+                type: 'primary',
+                multi_url: {
+                  url: `${webPublicUrl.replace(/\/$/, '')}/usage`,
+                  pc_url: '',
+                  android_url: '',
+                  ios_url: '',
+                },
+              },
+            ],
+          },
+        ];
+      }
+      sendImWithFailTracking(
+        errorImChannel,
+        `⚠️ Agent 错误：${errorDetail}${isRateLimit && !webPublicUrl ? '\n\n> 💡 可在 Web 端 /usage 页面查看用量详情' : ''}`,
+        [],
+        Object.keys(sendOpts).length > 0 ? sendOpts : undefined,
+      );
+    }
     logger.warn(
       { group: group.name, error: errorDetail },
       'Agent error (no reply sent), keeping cursor at previous position for retry',
     );
+    triggerMessagesByFolder.delete(effectiveGroup.folder);
     return false;
   }
 
   // Final fallback for silent-success paths (no visible reply).
   commitCursor();
 
+  triggerMessagesByFolder.delete(effectiveGroup.folder);
   return true;
 }
 
@@ -2694,10 +2770,30 @@ function startIpcWatcher(): void {
                         data.text,
                         sourceGroup,
                       );
+                      // Resolve reply target from trigger messages map (set when agent launched),
+                      // falling back to DB lookup if the map is empty (e.g., task-spawned agents).
+                      const triggerMap = triggerMessagesByFolder.get(sourceGroup);
+                      const triggerMsg = triggerMap?.get(data.targetChannel);
+                      const lastInbound = triggerMsg || getLastInboundMessage(
+                        data.chatJid,
+                        data.targetChannel, // source_jid = the IM channel
+                      );
+                      const sendOptions: IMSendOptions = {};
+                      // Always reply to the triggering message, not the latest in chat
+                      if (lastInbound?.id) {
+                        sendOptions.replyToMsgId = lastInbound.id;
+                      }
+                      if (data.urgent && lastInbound?.sender) {
+                        sendOptions.urgent = true;
+                        sendOptions.urgentUserIds = [lastInbound.sender];
+                      }
                       sendImWithFailTracking(
                         data.targetChannel,
                         data.text,
                         localImagePaths,
+                        Object.keys(sendOptions).length > 0
+                          ? sendOptions
+                          : undefined,
                       );
                     }
                     // 始终存 DB + 广播 Web（不发 IM）
@@ -3668,6 +3764,18 @@ async function startMessageLoop(): Promise<void> {
           const lastRawText = messagesToSend[messagesToSend.length - 1].content;
           const intent = analyzeIntent(lastRawText);
 
+          // Helper: update trigger message map so IPC reply handler threads
+          // to the latest message the agent actually sees.
+          const updateTriggerMap = () => {
+            const existingTrigger = triggerMessagesByFolder.get(group.folder);
+            if (existingTrigger) {
+              for (const m of messagesToSend) {
+                const srcJid = m.source_jid || m.chat_jid;
+                existingTrigger.set(srcJid, { id: m.id, sender: m.sender });
+              }
+            }
+          };
+
           if (route.action === 'inject') {
             // Same channel, within window — inject into running agent
             turnObservabilityManager.syncTurn(
@@ -3682,6 +3790,7 @@ async function startMessageLoop(): Promise<void> {
               intent,
             );
             if (sendResult === 'sent') {
+              updateTriggerMap();
               logger.info(
                 {
                   chatJid,
@@ -3735,6 +3844,7 @@ async function startMessageLoop(): Promise<void> {
               intent,
             );
             if (sendResult === 'sent') {
+              updateTriggerMap();
               logger.info(
                 {
                   chatJid,
@@ -4357,6 +4467,7 @@ async function main(): Promise<void> {
     manager: memoryAgentManager,
     token: memoryAgentToken,
   });
+  injectFeishuApiDeps({ token: memoryAgentToken }); // Reuse same internal token
   injectMemoryDeps({ manager: memoryAgentManager, queue });
   memoryAgentManager.startIdleChecks();
   logger.info('Memory Agent Manager initialized');

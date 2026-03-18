@@ -51,6 +51,7 @@ import logsRoutes from './routes/logs.js';
 import turnsRoutes from './routes/turns.js';
 import agentDefinitionsRoutes from './routes/agent-definitions.js';
 import memoryAgentInternalRoutes from './routes/memory-agent.js';
+import feishuApiRoutes, { injectFeishuApiDeps } from './routes/feishu-api.js';
 import { usage as usageRoutes } from './routes/usage.js';
 import billingRoutes from './routes/billing.js';
 import {
@@ -177,6 +178,7 @@ app.route('/api', monitorRoutes);
 app.route('/api/usage', usageRoutes);
 app.route('/api/billing', billingRoutes);
 app.route('/api/internal/memory', memoryAgentInternalRoutes);
+app.route('/api/internal/feishu', feishuApiRoutes);
 
 // --- POST /api/messages ---
 

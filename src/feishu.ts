@@ -65,6 +65,17 @@ export interface FeishuChatInfo {
   chat_mode?: string; // 'p2p' | 'group'
 }
 
+export interface FeishuSendOptions {
+  /** Send as urgent/加急 notification. */
+  urgent?: boolean;
+  /** Open IDs of users to receive the urgent notification. Resolved by caller. */
+  urgentUserIds?: string[];
+  /** Reply to this specific message ID instead of the last received message. */
+  replyToMsgId?: string;
+  /** Extra elements to append to the interactive card (e.g. action buttons). */
+  cardExtraElements?: Array<Record<string, unknown>>;
+}
+
 export interface FeishuConnection {
   connect(opts: ConnectOptions): Promise<boolean>;
   stop(): Promise<void>;
@@ -72,6 +83,7 @@ export interface FeishuConnection {
     chatId: string,
     text: string,
     localImagePaths?: string[],
+    options?: FeishuSendOptions,
   ): Promise<void>;
   sendImage(
     chatId: string,
@@ -280,9 +292,12 @@ function extractMessageContent(
     }
 
     if (messageType === 'merge_forward') {
-      // 合并转发消息：递归提取子消息内容，格式化为引用块
+      // 合并转发消息：尝试从 content 中提取子消息（通常为空或仅含引用 ID）
+      // 实际子消息内容需要通过 API 异步获取，见 expandMergeForwardContent()
       const items = parsed.message_list || parsed.items || [];
       if (!Array.isArray(items) || items.length === 0) {
+        // content 中没有内嵌子消息，返回占位符
+        // handleIncomingMessage 会在调用前通过 API 展开内容
         return { text: '[合并转发消息]' };
       }
       const lines: string[] = ['[合并转发消息]:'];
@@ -379,7 +394,7 @@ function getFileType(
  * Build a Feishu interactive card from markdown text.
  * Extracts headings as card title, splits content into visual sections.
  */
-function buildInteractiveCard(text: string): object {
+function buildInteractiveCard(text: string, extraElements?: Array<Record<string, unknown>>): object {
   const lines = text.split('\n');
   let title = '';
   let bodyStartIdx = 0;
@@ -430,6 +445,11 @@ function buildInteractiveCard(text: string): object {
   // Ensure at least one element
   if (elements.length === 0) {
     elements.push({ tag: 'markdown', content: text.trim() });
+  }
+
+  // Append caller-provided extra elements (e.g. action buttons)
+  if (extraElements?.length) {
+    elements.push(...extraElements);
   }
 
   return {
@@ -719,6 +739,66 @@ export function createFeishuConnection(
     }
   }
 
+  /**
+   * 展开合并转发消息：通过 API 获取子消息内容。
+   * 飞书 WebSocket 推送的 merge_forward 消息 content 通常不含子消息正文，
+   * 需要通过 GET /im/v1/messages/{message_id} 获取完整内容。
+   */
+  async function expandMergeForwardContent(
+    messageId: string,
+  ): Promise<string | null> {
+    if (!client) return null;
+    try {
+      const resp = await client.im.message.get({
+        path: { message_id: messageId },
+      });
+      const items = resp?.data?.items;
+      if (!items || !Array.isArray(items) || items.length === 0) {
+        logger.debug(
+          { messageId },
+          'merge_forward: no sub-messages returned from API',
+        );
+        return null;
+      }
+
+      const lines: string[] = ['[合并转发消息]:'];
+      for (const item of items.slice(0, 30)) {
+        // sender.id is open_id when sender_type is 'user'
+        const senderId = item.sender?.id ?? '';
+        const senderName =
+          item.sender?.sender_type === 'user'
+            ? getSenderName(senderId) || senderId.slice(0, 8)
+            : '系统';
+        const msgType = item.msg_type || '';
+        const body = item.body?.content || '';
+        let text = '';
+        try {
+          const sub = extractMessageContent(msgType, body);
+          text = sub.text || '';
+        } catch {
+          text = typeof body === 'string' ? body : '';
+        }
+        if (text) {
+          lines.push(`> ${senderName}: ${text.split('\n')[0].slice(0, 300)}`);
+        } else if (msgType === 'image') {
+          lines.push(`> ${senderName}: [图片]`);
+        } else if (msgType === 'file') {
+          lines.push(`> ${senderName}: [文件]`);
+        }
+      }
+      if (items.length > 30) {
+        lines.push(`> ... 共 ${items.length} 条消息`);
+      }
+      return lines.length > 1 ? lines.join('\n') : null;
+    } catch (err) {
+      logger.warn(
+        { err, messageId },
+        'Failed to expand merge_forward message via API',
+      );
+      return null;
+    }
+  }
+
   async function handleIncomingMessage(
     payload: IncomingMessagePayload,
     source: 'ws' | 'backfill',
@@ -772,7 +852,23 @@ export function createFeishuConnection(
       return;
     }
 
-    const extracted = extractMessageContent(messageType, rawContent);
+    // 合并转发消息：通过 API 展开子消息内容
+    let effectiveContent = rawContent;
+    let effectiveType = messageType;
+    if (messageType === 'merge_forward') {
+      const expanded = await expandMergeForwardContent(messageId);
+      if (expanded) {
+        // 展开成功，将内容作为纯文本处理
+        effectiveContent = JSON.stringify({ text: expanded });
+        effectiveType = 'text';
+        logger.info(
+          { messageId },
+          'merge_forward message expanded via API',
+        );
+      }
+    }
+
+    const extracted = extractMessageContent(effectiveType, effectiveContent);
     let text = extracted.text;
     if (!text?.trim() && !extracted.imageKeys && !extracted.fileInfos?.length) {
       logger.info(
@@ -1418,6 +1514,7 @@ export function createFeishuConnection(
       chatId: string,
       text: string,
       localImagePaths?: string[],
+      options?: FeishuSendOptions,
     ): Promise<void> {
       if (!client) {
         logger.warn(
@@ -1437,35 +1534,38 @@ export function createFeishuConnection(
       };
 
       try {
-        // Helper: send card or plain text via reply or create
-        const sendMsg = async (msgText: string) => {
+        // Helper: send card or plain text via reply or create. Returns sent message_id.
+        const sendMsg = async (msgText: string): Promise<string | undefined> => {
           const c = client!; // safe: outer guard checks client != null
-          const card = buildInteractiveCard(msgText);
+          const card = buildInteractiveCard(msgText, options?.cardExtraElements);
           const cardContent = JSON.stringify(card);
-          const lastMsgId = lastMessageIdByChat.get(chatId);
+          // Prefer explicit replyToMsgId (from the triggering message) over generic lastMessageIdByChat
+          const lastMsgId = options?.replyToMsgId || lastMessageIdByChat.get(chatId);
 
           if (lastMsgId) {
             try {
-              await c.im.message.reply({
+              const res = await c.im.message.reply({
                 path: { message_id: lastMsgId },
                 data: { content: cardContent, msg_type: 'interactive' },
               });
+              return (res as any)?.data?.message_id || (res as any)?.message_id;
             } catch (err: any) {
               logger.warn(
                 { chatId, respStatus: err?.response?.status },
                 'Feishu interactive reply failed, fallback to plain text',
               );
-              await c.im.message.reply({
+              const res = await c.im.message.reply({
                 path: { message_id: lastMsgId },
                 data: {
                   content: JSON.stringify({ text: msgText }),
                   msg_type: 'text',
                 },
               });
+              return (res as any)?.data?.message_id || (res as any)?.message_id;
             }
           } else {
             try {
-              await c.im.v1.message.create({
+              const res = await c.im.v1.message.create({
                 params: { receive_id_type: 'chat_id' },
                 data: {
                   receive_id: chatId,
@@ -1473,12 +1573,13 @@ export function createFeishuConnection(
                   content: cardContent,
                 },
               });
+              return (res as any)?.data?.message_id || (res as any)?.message_id;
             } catch (err: any) {
               logger.warn(
                 { chatId, respStatus: err?.response?.status },
                 'Feishu interactive create failed, fallback to plain text',
               );
-              await c.im.v1.message.create({
+              const res = await c.im.v1.message.create({
                 params: { receive_id_type: 'chat_id' },
                 data: {
                   receive_id: chatId,
@@ -1486,12 +1587,14 @@ export function createFeishuConnection(
                   content: JSON.stringify({ text: msgText }),
                 },
               });
+              return (res as any)?.data?.message_id || (res as any)?.message_id;
             }
           }
         };
 
+        let sentMsgId: string | undefined;
         try {
-          await sendMsg(text);
+          sentMsgId = await sendMsg(text);
         } catch (outerErr: any) {
           // Feishu content audit (error 230028) flags patterns like "user@domain"
           // as sensitive data (EMAIL_ADDRESS). Replace @ with fullwidth ＠ and retry.
@@ -1507,7 +1610,7 @@ export function createFeishuConnection(
                 /([a-zA-Z0-9._%+\-]+)@([a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/g,
                 '$1\uFF20$2',
               );
-              await sendMsg(
+              sentMsgId = await sendMsg(
                 sanitized +
                   '\n\n> ⚠️ 消息中的 @ 已被替换为全角＠以通过飞书安全审计，请注意复制时替换回半角 @',
               );
@@ -1524,6 +1627,26 @@ export function createFeishuConnection(
         }
         logger.debug({ chatId }, 'Sent Feishu card message');
         clearAckReaction();
+
+        // Send urgent/加急 notification if requested
+        if (options?.urgent && sentMsgId && client) {
+          const userIds = options.urgentUserIds?.filter(Boolean);
+          if (userIds?.length) {
+            try {
+              await client.request({
+                method: 'PATCH',
+                url: `/open-apis/im/v1/messages/${sentMsgId}/urgent_app`,
+                params: { user_id_type: 'open_id' },
+                data: { user_id_list: userIds },
+              });
+              logger.info({ chatId, sentMsgId, userIds }, 'Sent Feishu urgent notification');
+            } catch (urgentErr) {
+              logger.warn({ chatId, sentMsgId, err: urgentErr }, 'Failed to send Feishu urgent notification');
+            }
+          } else {
+            logger.debug({ chatId }, 'No user IDs provided for urgent notification');
+          }
+        }
 
         for (const localImagePath of localImagePaths || []) {
           try {

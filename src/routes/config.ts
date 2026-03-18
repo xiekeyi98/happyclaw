@@ -60,6 +60,9 @@ import {
   saveSystemSettings,
   getUserFeishuConfig,
   saveUserFeishuConfig,
+  getUserFeishuOAuthTokens,
+  saveUserFeishuOAuthTokens,
+  clearUserFeishuOAuthTokens,
   getUserTelegramConfig,
   saveUserTelegramConfig,
   getUserQQConfig,
@@ -77,6 +80,12 @@ import {
   isBillingEnabled,
   clearBillingEnabledCache,
 } from '../billing.js';
+import {
+  createOAuthState,
+  consumeOAuthState,
+  buildOAuthUrl,
+  exchangeCodeForTokens,
+} from '../feishu-oauth.js';
 
 const configRoutes = new Hono<{ Variables: Variables }>();
 
@@ -1458,6 +1467,161 @@ configRoutes.put('/user-im/feishu', authMiddleware, async (c) => {
     return c.json({ error: message }, 400);
   }
 });
+
+// ─── Feishu OAuth Document Access ────────────────────────────────────
+
+/**
+ * GET /api/config/user-im/feishu/oauth-status
+ * Returns the current OAuth authorization status for the user.
+ */
+configRoutes.get(
+  '/user-im/feishu/oauth-status',
+  authMiddleware,
+  (c) => {
+    const user = c.get('user') as AuthUser;
+    const tokens = getUserFeishuOAuthTokens(user.id);
+    const config = getUserFeishuConfig(user.id);
+
+    if (!tokens) {
+      return c.json({
+        authorized: false,
+        hasAppCredentials: !!(config?.appId && config?.appSecret),
+      });
+    }
+
+    return c.json({
+      authorized: true,
+      hasAppCredentials: !!(config?.appId && config?.appSecret),
+      authorizedAt: tokens.authorizedAt || null,
+      scopes: tokens.scopes || '',
+      tokenExpired: tokens.expiresAt < Date.now(),
+      hasRefreshToken: !!tokens.refreshToken,
+    });
+  },
+);
+
+/**
+ * GET /api/config/user-im/feishu/oauth-url
+ * Generates a Feishu OAuth authorization URL for the user.
+ * Requires existing Feishu app credentials (appId + appSecret).
+ */
+configRoutes.get(
+  '/user-im/feishu/oauth-url',
+  authMiddleware,
+  (c) => {
+    const user = c.get('user') as AuthUser;
+    const config = getUserFeishuConfig(user.id);
+
+    if (!config?.appId || !config?.appSecret) {
+      return c.json(
+        { error: '请先配置飞书应用的 App ID 和 App Secret' },
+        400,
+      );
+    }
+
+    // Build redirect URI from request origin
+    const origin = c.req.header('Origin') || c.req.header('Referer')?.replace(/\/[^/]*$/, '') || '';
+    if (!origin) {
+      return c.json({ error: '无法确定回调地址，请从 Web 界面发起授权' }, 400);
+    }
+    const redirectUri = `${origin}/feishu-oauth-callback`;
+
+    const state = createOAuthState(user.id);
+    const url = buildOAuthUrl(config.appId, redirectUri, state);
+
+    return c.json({ url, state, redirectUri });
+  },
+);
+
+/**
+ * POST /api/config/user-im/feishu/oauth-callback
+ * Exchanges the authorization code for access + refresh tokens.
+ * Body: { code: string, state: string, redirectUri: string }
+ */
+configRoutes.post(
+  '/user-im/feishu/oauth-callback',
+  authMiddleware,
+  async (c) => {
+    const user = c.get('user') as AuthUser;
+    const body = await c.req.json().catch(() => ({}));
+
+    const { code, state, redirectUri } = body as {
+      code?: string;
+      state?: string;
+      redirectUri?: string;
+    };
+
+    if (!code || !state || !redirectUri) {
+      return c.json({ error: 'Missing required fields: code, state, redirectUri' }, 400);
+    }
+
+    // Validate state
+    const stateUserId = consumeOAuthState(state);
+    if (!stateUserId) {
+      return c.json({ error: '授权状态已过期，请重新发起授权' }, 400);
+    }
+    if (stateUserId !== user.id) {
+      return c.json({ error: '授权状态不匹配' }, 403);
+    }
+
+    // Get app credentials
+    const config = getUserFeishuConfig(user.id);
+    if (!config?.appId || !config?.appSecret) {
+      return c.json({ error: '飞书应用凭据缺失' }, 400);
+    }
+
+    try {
+      const tokens = await exchangeCodeForTokens(
+        config.appId,
+        config.appSecret,
+        code,
+        redirectUri,
+      );
+
+      saveUserFeishuOAuthTokens(user.id, {
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        expiresAt: tokens.expiresAt,
+        scopes: tokens.scopes,
+      });
+
+      logger.info(
+        { userId: user.id, scopes: tokens.scopes },
+        'Feishu OAuth authorized successfully',
+      );
+
+      return c.json({
+        success: true,
+        scopes: tokens.scopes,
+        expiresIn: Math.floor((tokens.expiresAt - Date.now()) / 1000),
+      });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'OAuth 授权失败';
+      logger.error({ err, userId: user.id }, 'Feishu OAuth callback failed');
+      return c.json({ error: message }, 500);
+    }
+  },
+);
+
+/**
+ * DELETE /api/config/user-im/feishu/oauth-revoke
+ * Revokes the user's OAuth authorization (clears stored tokens).
+ */
+configRoutes.delete(
+  '/user-im/feishu/oauth-revoke',
+  authMiddleware,
+  (c) => {
+    const user = c.get('user') as AuthUser;
+
+    clearUserFeishuOAuthTokens(user.id);
+    logger.info({ userId: user.id }, 'Feishu OAuth authorization revoked');
+
+    return c.json({ success: true });
+  },
+);
+
+// ─── Telegram per-user config ─────────────────────────────────────
 
 configRoutes.get('/user-im/telegram', authMiddleware, (c) => {
   const user = c.get('user') as AuthUser;

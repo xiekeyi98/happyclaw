@@ -240,6 +240,8 @@ export const SystemSettingsSchema = z.object({
   turnBatchWindowMs: z.number().int().min(1000).max(60000).optional(),
   turnMaxBatchMs: z.number().int().min(5000).max(300000).optional(),
   traceRetentionDays: z.number().int().min(1).max(90).optional(),
+  feishuApiDomain: z.string().min(1).max(100).optional(),
+  feishuDocDomain: z.string().min(1).max(100).optional(),
 });
 
 export const AppearanceConfigSchema = z.object({

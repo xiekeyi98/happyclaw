@@ -5,6 +5,7 @@ import { RegisterPage } from './pages/RegisterPage';
 import { SetupPage } from './pages/SetupPage';
 import { SetupProvidersPage } from './pages/SetupProvidersPage';
 import { SetupChannelsPage } from './pages/SetupChannelsPage';
+import { FeishuOAuthCallbackPage } from './pages/FeishuOAuthCallbackPage';
 import { MemoryPage } from './pages/MemoryPage';
 import { SkillsPage } from './pages/SkillsPage';
 import { McpServersPage } from './pages/McpServersPage';
@@ -44,6 +45,16 @@ export function App() {
           element={
             <AuthGuard>
               <SetupChannelsPage />
+            </AuthGuard>
+          }
+        />
+
+        {/* Feishu OAuth Callback */}
+        <Route
+          path="/feishu-oauth-callback"
+          element={
+            <AuthGuard>
+              <FeishuOAuthCallbackPage />
             </AuthGuard>
           }
         />
