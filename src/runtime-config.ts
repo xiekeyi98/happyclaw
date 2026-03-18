@@ -192,6 +192,14 @@ interface FeishuSecretPayload {
   appSecret: string;
 }
 
+/** OAuth token payload stored encrypted alongside IM credentials. */
+interface FeishuOAuthSecretPayload {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  scopes: string;
+}
+
 interface TelegramSecretPayload {
   botToken: string;
 }
@@ -202,6 +210,9 @@ interface StoredFeishuProviderConfigV1 {
   enabled?: boolean;
   updatedAt: string;
   secret: EncryptedSecrets;
+  /** Encrypted OAuth tokens (separate from IM secret). */
+  oauthSecret?: EncryptedSecrets;
+  oauthAuthorizedAt?: string;
 }
 
 interface StoredTelegramProviderConfigV1 {
@@ -2307,6 +2318,14 @@ export interface UserFeishuConfig {
   updatedAt: string | null;
 }
 
+export interface UserFeishuOAuthTokens {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number; // Unix timestamp ms
+  scopes: string;
+  authorizedAt?: string; // ISO timestamp
+}
+
 export interface UserTelegramConfig {
   botToken: string;
   proxyUrl?: string;
@@ -2373,21 +2392,158 @@ export function saveUserFeishuConfig(
     updatedAt: new Date().toISOString(),
   };
 
+  // Preserve existing OAuth tokens when saving IM config
+  const existing = readRawFeishuConfig(userId);
+
   const payload: StoredFeishuProviderConfigV1 = {
     version: 1,
     appId: normalized.appId,
     enabled: normalized.enabled,
     updatedAt: normalized.updatedAt || new Date().toISOString(),
     secret: encryptFeishuSecret({ appSecret: normalized.appSecret }),
+    ...(existing?.oauthSecret ? { oauthSecret: existing.oauthSecret } : {}),
+    ...(existing?.oauthAuthorizedAt
+      ? { oauthAuthorizedAt: existing.oauthAuthorizedAt }
+      : {}),
   };
 
+  writeFeishuConfigFile(userId, payload);
+  return normalized;
+}
+
+/** Read the raw stored config without decryption (for preserving fields). */
+function readRawFeishuConfig(
+  userId: string,
+): StoredFeishuProviderConfigV1 | null {
+  const filePath = path.join(userImDir(userId), 'feishu.json');
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    if (parsed.version !== 1) return null;
+    return parsed as unknown as StoredFeishuProviderConfigV1;
+  } catch {
+    return null;
+  }
+}
+
+/** Atomic write of feishu.json. */
+function writeFeishuConfigFile(
+  userId: string,
+  payload: StoredFeishuProviderConfigV1,
+): void {
   const dir = userImDir(userId);
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, 'feishu.json');
   const tmp = `${filePath}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
   fs.renameSync(tmp, filePath);
-  return normalized;
+}
+
+function encryptFeishuOAuthSecret(
+  payload: FeishuOAuthSecretPayload,
+): EncryptedSecrets {
+  const key = getOrCreateEncryptionKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+
+  const plaintext = Buffer.from(JSON.stringify(payload), 'utf-8');
+  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  return {
+    iv: iv.toString('base64'),
+    tag: tag.toString('base64'),
+    data: encrypted.toString('base64'),
+  };
+}
+
+function decryptFeishuOAuthSecret(
+  secrets: EncryptedSecrets,
+): FeishuOAuthSecretPayload {
+  const key = getOrCreateEncryptionKey();
+  const iv = Buffer.from(secrets.iv, 'base64');
+  const tag = Buffer.from(secrets.tag, 'base64');
+  const encrypted = Buffer.from(secrets.data, 'base64');
+
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(tag);
+
+  const decrypted = Buffer.concat([
+    decipher.update(encrypted),
+    decipher.final(),
+  ]).toString('utf-8');
+  const parsed = JSON.parse(decrypted) as Record<string, unknown>;
+
+  return {
+    accessToken: String(parsed.accessToken ?? ''),
+    refreshToken: String(parsed.refreshToken ?? ''),
+    expiresAt: typeof parsed.expiresAt === 'number' ? parsed.expiresAt : 0,
+    scopes: String(parsed.scopes ?? ''),
+  };
+}
+
+/** Read OAuth tokens for a user. Returns null if not authorized. */
+export function getUserFeishuOAuthTokens(
+  userId: string,
+): UserFeishuOAuthTokens | null {
+  const stored = readRawFeishuConfig(userId);
+  if (!stored?.oauthSecret) return null;
+
+  try {
+    const decrypted = decryptFeishuOAuthSecret(stored.oauthSecret);
+    if (!decrypted.accessToken) return null;
+
+    return {
+      ...decrypted,
+      authorizedAt: stored.oauthAuthorizedAt || null,
+    } as UserFeishuOAuthTokens;
+  } catch (err) {
+    logger.warn({ err, userId }, 'Failed to decrypt Feishu OAuth tokens');
+    return null;
+  }
+}
+
+/** Save OAuth tokens for a user (preserves existing IM config). */
+export function saveUserFeishuOAuthTokens(
+  userId: string,
+  tokens: Omit<UserFeishuOAuthTokens, 'authorizedAt'>,
+): void {
+  const existing = readRawFeishuConfig(userId);
+
+  if (!existing) {
+    // No existing config — create minimal config with just OAuth
+    const payload: StoredFeishuProviderConfigV1 = {
+      version: 1,
+      appId: '',
+      enabled: false,
+      updatedAt: new Date().toISOString(),
+      secret: encryptFeishuSecret({ appSecret: '' }),
+      oauthSecret: encryptFeishuOAuthSecret(tokens),
+      oauthAuthorizedAt: new Date().toISOString(),
+    };
+    writeFeishuConfigFile(userId, payload);
+    return;
+  }
+
+  // Preserve existing IM config, update OAuth tokens
+  existing.oauthSecret = encryptFeishuOAuthSecret(tokens);
+  if (!existing.oauthAuthorizedAt) {
+    existing.oauthAuthorizedAt = new Date().toISOString();
+  }
+  existing.updatedAt = new Date().toISOString();
+  writeFeishuConfigFile(userId, existing);
+}
+
+/** Clear OAuth tokens for a user (preserves IM config). */
+export function clearUserFeishuOAuthTokens(userId: string): void {
+  const existing = readRawFeishuConfig(userId);
+  if (!existing) return;
+
+  delete existing.oauthSecret;
+  delete existing.oauthAuthorizedAt;
+  existing.updatedAt = new Date().toISOString();
+  writeFeishuConfigFile(userId, existing);
 }
 
 export function getUserTelegramConfig(
@@ -2560,6 +2716,9 @@ export interface SystemSettings {
   memoryQueryTimeout: number;
   memoryGlobalSleepTimeout: number;
   memorySendTimeout: number;
+  // Feishu
+  feishuApiDomain: string;
+  feishuDocDomain: string;
 }
 
 const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
@@ -2580,6 +2739,8 @@ const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
   memoryQueryTimeout: 60000,
   memoryGlobalSleepTimeout: 300000,
   memorySendTimeout: 120000,
+  feishuApiDomain: 'open.feishu.cn',
+  feishuDocDomain: 'bytedance.larkoffice.com',
 };
 
 function parseIntEnv(envVar: string | undefined, fallback: number): number {
@@ -2674,6 +2835,14 @@ function readSystemSettingsFromFile(): SystemSettings | null {
       typeof raw.memorySendTimeout === 'number' && raw.memorySendTimeout > 0
         ? raw.memorySendTimeout
         : DEFAULT_SYSTEM_SETTINGS.memorySendTimeout,
+    feishuApiDomain:
+      typeof raw.feishuApiDomain === 'string' && raw.feishuApiDomain
+        ? raw.feishuApiDomain
+        : DEFAULT_SYSTEM_SETTINGS.feishuApiDomain,
+    feishuDocDomain:
+      typeof raw.feishuDocDomain === 'string' && raw.feishuDocDomain
+        ? raw.feishuDocDomain
+        : DEFAULT_SYSTEM_SETTINGS.feishuDocDomain,
   };
 }
 
@@ -2742,6 +2911,10 @@ function buildEnvFallbackSettings(): SystemSettings {
       process.env.MEMORY_SEND_TIMEOUT,
       DEFAULT_SYSTEM_SETTINGS.memorySendTimeout,
     ),
+    feishuApiDomain:
+      process.env.FEISHU_API_DOMAIN || DEFAULT_SYSTEM_SETTINGS.feishuApiDomain,
+    feishuDocDomain:
+      process.env.FEISHU_DOC_DOMAIN || DEFAULT_SYSTEM_SETTINGS.feishuDocDomain,
   };
 }
 
@@ -2827,6 +3000,18 @@ export function saveSystemSettings(
   if (merged.memoryGlobalSleepTimeout > 3600000) merged.memoryGlobalSleepTimeout = 3600000; // max 1 hour
   if (merged.memorySendTimeout < 30000) merged.memorySendTimeout = 30000; // min 30s
   if (merged.memorySendTimeout > 3600000) merged.memorySendTimeout = 3600000; // max 1 hour
+  // Feishu domains: strip protocol prefix and trailing slash
+  for (const key of ['feishuApiDomain', 'feishuDocDomain'] as const) {
+    if (typeof merged[key] === 'string') {
+      merged[key] = merged[key]
+        .replace(/^https?:\/\//, '')
+        .replace(/\/+$/, '')
+        .trim();
+    }
+    if (!merged[key]) {
+      merged[key] = DEFAULT_SYSTEM_SETTINGS[key];
+    }
+  }
 
   fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
   const tmp = `${SYSTEM_SETTINGS_FILE}.tmp`;

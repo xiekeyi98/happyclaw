@@ -146,6 +146,7 @@ import {
   exportTranscriptsForUser,
 } from './memory-agent.js';
 import { injectMemoryAgentDeps } from './routes/memory-agent.js';
+import { injectFeishuApiDeps } from './routes/feishu-api.js';
 import { injectMemoryDeps } from './routes/memory.js';
 
 
@@ -4042,6 +4043,7 @@ async function main(): Promise<void> {
   memoryAgentManagerRef = memoryAgentManager;
   const memoryAgentToken = crypto.randomBytes(32).toString('hex');
   injectMemoryAgentDeps({ manager: memoryAgentManager, token: memoryAgentToken });
+  injectFeishuApiDeps({ token: memoryAgentToken }); // Reuse same internal token
   injectMemoryDeps({ manager: memoryAgentManager, queue });
   memoryAgentManager.startIdleChecks();
   logger.info('Memory Agent Manager initialized');

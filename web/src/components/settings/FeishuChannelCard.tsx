@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, ExternalLink, ShieldCheck, ShieldX } from 'lucide-react';
 
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -17,6 +17,15 @@ interface UserFeishuConfig {
   updatedAt: string | null;
 }
 
+interface OAuthStatus {
+  authorized: boolean;
+  hasAppCredentials: boolean;
+  authorizedAt?: string | null;
+  scopes?: string;
+  tokenExpired?: boolean;
+  hasRefreshToken?: boolean;
+}
+
 interface FeishuChannelCardProps extends SettingsNotification {}
 
 export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProps) {
@@ -26,6 +35,8 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [oauthStatus, setOauthStatus] = useState<OAuthStatus | null>(null);
+  const [oauthLoading, setOauthLoading] = useState(false);
 
   const enabled = config?.enabled ?? false;
 
@@ -43,9 +54,61 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
     }
   }, []);
 
+  const loadOAuthStatus = useCallback(async () => {
+    try {
+      const data = await api.get<OAuthStatus>('/api/config/user-im/feishu/oauth-status');
+      setOauthStatus(data);
+    } catch {
+      setOauthStatus(null);
+    }
+  }, []);
+
   useEffect(() => {
     loadConfig();
-  }, [loadConfig]);
+    loadOAuthStatus();
+  }, [loadConfig, loadOAuthStatus]);
+
+  // Check for OAuth success redirect
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('oauth') === 'success') {
+      loadOAuthStatus();
+      setNotice('飞书文档授权成功！');
+      // Clean up URL
+      params.delete('oauth');
+      const newUrl = params.toString()
+        ? `${window.location.pathname}?${params.toString()}`
+        : window.location.pathname;
+      window.history.replaceState({}, '', newUrl);
+    }
+  }, [loadOAuthStatus, setNotice]);
+
+  const handleOAuthAuthorize = async () => {
+    setOauthLoading(true);
+    setError(null);
+    try {
+      const data = await api.get<{ url: string }>('/api/config/user-im/feishu/oauth-url');
+      // Open Feishu OAuth page
+      window.location.href = data.url;
+    } catch (err) {
+      setError(getErrorMessage(err, '获取授权链接失败'));
+      setOauthLoading(false);
+    }
+  };
+
+  const handleOAuthRevoke = async () => {
+    setOauthLoading(true);
+    setError(null);
+    try {
+      await api.delete('/api/config/user-im/feishu/oauth-revoke');
+      setOauthStatus({ authorized: false, hasAppCredentials: oauthStatus?.hasAppCredentials ?? false });
+      setNotice('已撤销飞书文档授权');
+    } catch (err) {
+      setError(getErrorMessage(err, '撤销授权失败'));
+    } finally {
+      setOauthLoading(false);
+    }
+  };
 
   const handleToggle = async (newEnabled: boolean) => {
     setToggling(true);
@@ -148,6 +211,65 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
                 {saving && <Loader2 className="size-4 animate-spin" />}
                 保存飞书配置
               </Button>
+            </div>
+
+            {/* OAuth Document Access Section */}
+            <div className="pt-3 border-t border-slate-100">
+              <div className="flex items-center gap-2 mb-2">
+                {oauthStatus?.authorized ? (
+                  <ShieldCheck className="size-4 text-emerald-500" />
+                ) : (
+                  <ShieldX className="size-4 text-slate-400" />
+                )}
+                <h4 className="text-xs font-semibold text-slate-700">
+                  飞书文档访问授权
+                </h4>
+              </div>
+              <p className="text-xs text-slate-500 mb-3">
+                授权后，Agent 可以直接读取你有权限访问的飞书文档和 Wiki 页面。
+              </p>
+
+              {oauthStatus?.authorized ? (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 text-xs text-emerald-600">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    已授权
+                    {oauthStatus.authorizedAt && (
+                      <span className="text-slate-400">
+                        ({new Date(oauthStatus.authorizedAt).toLocaleDateString()})
+                      </span>
+                    )}
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleOAuthRevoke}
+                    disabled={oauthLoading}
+                  >
+                    {oauthLoading && <Loader2 className="size-3 animate-spin" />}
+                    撤销授权
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  size="sm"
+                  onClick={handleOAuthAuthorize}
+                  disabled={oauthLoading || !config?.hasAppSecret}
+                >
+                  {oauthLoading ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <ExternalLink className="size-3" />
+                  )}
+                  授权飞书文档访问
+                </Button>
+              )}
+
+              {!config?.hasAppSecret && !oauthStatus?.authorized && (
+                <p className="text-xs text-amber-600 mt-1">
+                  请先保存飞书 App ID 和 App Secret
+                </p>
+              )}
             </div>
           </>
         )}

@@ -237,6 +237,8 @@ export const SystemSettingsSchema = z.object({
   memoryQueryTimeout: z.number().int().min(10000).max(600000).optional(),
   memoryGlobalSleepTimeout: z.number().int().min(60000).max(3600000).optional(),
   memorySendTimeout: z.number().int().min(30000).max(3600000).optional(),
+  feishuApiDomain: z.string().min(1).max(100).optional(),
+  feishuDocDomain: z.string().min(1).max(100).optional(),
 });
 
 export const AppearanceConfigSchema = z.object({
