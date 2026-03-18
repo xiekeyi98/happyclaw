@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 
 import {
   getRegisteredGroup,
-  getTurnsByJid,
+  getTurnsByFolder,
   getTurnById,
   getActiveTurnByFolder,
 } from '../db.js';
@@ -31,10 +31,11 @@ turnsRoutes.get('/:jid/turns', (c) => {
     return c.json({ error: 'Not found' }, 404);
   }
 
-  const limit = Math.min(parseInt(c.req.query('limit') || '50', 10) || 50, 100);
+  const limit = Math.min(parseInt(c.req.query('limit') || '50', 10) || 50, 200);
   const offset = parseInt(c.req.query('offset') || '0', 10) || 0;
 
-  const turns = getTurnsByJid(jid, limit, offset);
+  // Query by folder so all IM channels sharing the same home group are included
+  const turns = getTurnsByFolder(group.folder, limit, offset);
   return c.json({
     turns: turns.map((t) => ({
       id: t.id,

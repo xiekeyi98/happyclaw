@@ -5320,6 +5320,18 @@ export function getTurnsByJid(
     .all(chatJid, limit, offset) as TurnRow[];
 }
 
+export function getTurnsByFolder(
+  folder: string,
+  limit: number = 50,
+  offset: number = 0,
+): TurnRow[] {
+  return db
+    .prepare(
+      'SELECT * FROM turns WHERE group_folder = ? ORDER BY started_at DESC LIMIT ? OFFSET ?',
+    )
+    .all(folder, limit, offset) as TurnRow[];
+}
+
 export function cleanupOldTurns(olderThanDays: number): number {
   const cutoff = new Date(
     Date.now() - olderThanDays * 24 * 60 * 60 * 1000,
