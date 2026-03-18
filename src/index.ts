@@ -1632,6 +1632,18 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const commitCursor = (): void => {
     if (cursorCommitted) return;
+    // Only advance, never regress — the message loop may have already
+    // advanced the cursor via IPC injection while the agent was running.
+    const current = lastAgentTimestamp[chatJid];
+    if (
+      current &&
+      (lastProcessed.timestamp < current.timestamp ||
+        (lastProcessed.timestamp === current.timestamp &&
+          lastProcessed.id <= current.id))
+    ) {
+      cursorCommitted = true;
+      return;
+    }
     lastAgentTimestamp[chatJid] = {
       timestamp: lastProcessed.timestamp,
       id: lastProcessed.id,
