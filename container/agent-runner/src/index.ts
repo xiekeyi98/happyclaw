@@ -559,7 +559,10 @@ function drainIpcInput(): IpcDrainResult {
  */
 function waitForIpcMessage(): Promise<{ text: string; images?: Array<{ data: string; mimeType?: string }> } | null> {
   return new Promise((resolve) => {
+    let pollCount = 0;
+    const HEARTBEAT_INTERVAL = 120; // Log every ~60 seconds (120 polls * 500ms)
     const poll = () => {
+      pollCount++;
       if (shouldClose()) {
         resolve(null);
         return;
@@ -574,6 +577,15 @@ function waitForIpcMessage(): Promise<{ text: string; images?: Array<{ data: str
       if (shouldInterrupt()) {
         log('Interrupt sentinel received while idle, ignoring');
         clearInterruptRequested();
+      }
+      // Periodic heartbeat to detect stuck polling
+      if (pollCount % HEARTBEAT_INTERVAL === 0) {
+        try {
+          const files = fs.readdirSync(IPC_INPUT_DIR);
+          log(`Idle heartbeat: ${Math.round(pollCount * IPC_POLL_MS / 1000)}s waiting, IPC dir has ${files.length} files: [${files.join(', ')}]`);
+        } catch {
+          log(`Idle heartbeat: ${Math.round(pollCount * IPC_POLL_MS / 1000)}s waiting, IPC dir read failed`);
+        }
       }
       const { messages, modeChange } = drainIpcInput();
       if (modeChange) {
@@ -738,7 +750,7 @@ async function runQuery(
   allowedTools: string[] = DEFAULT_ALLOWED_TOOLS,
   disallowedTools?: string[],
   images?: Array<{ data: string; mimeType?: string }>,
-): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; contextOverflow?: boolean; unrecoverableTranscriptError?: boolean; interruptedDuringQuery: boolean; sessionResumeFailed?: boolean }> {
+): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; contextOverflow?: boolean; unrecoverableTranscriptError?: boolean; interruptedDuringQuery: boolean; sessionResumeFailed?: boolean; drainDetectedDuringQuery?: boolean }> {
   const stream = new MessageStream();
   // Track IM channels from initial prompt
   extractSourceChannels(prompt);
@@ -797,6 +809,11 @@ async function runQuery(
   resetQueryActivityTimer();
   // queryRef is set just before the for-await loop so pollIpcDuringQuery can call interrupt()
   let queryRef: { interrupt(): Promise<void>; setPermissionMode(mode: PermissionMode): Promise<void> } | null = null;
+  // Track drain detection during query: if _drain appears while the SDK query
+  // is still running, we set this flag and let the query finish naturally.
+  // The main loop will check this flag after the for-await loop exits.
+  let drainDetectedDuringQuery = false;
+
   const pollIpcDuringQuery = () => {
     if (!ipcPolling) return;
     if (shouldClose()) {
@@ -805,6 +822,14 @@ async function runQuery(
       stream.end();
       ipcPolling = false;
       return;
+    }
+    // Check for _drain during query: consume the sentinel immediately so it
+    // isn't lost to a filesystem race, but let the current query finish.
+    if (!drainDetectedDuringQuery && shouldDrain()) {
+      log('Drain sentinel detected during query, will exit after query completes');
+      drainDetectedDuringQuery = true;
+      // Don't end the stream or stop polling — let the query finish naturally.
+      // The flag is checked in the main loop after the for-await exits.
     }
     if (shouldInterrupt()) {
       log('Interrupt sentinel detected, interrupting current query');
@@ -1201,8 +1226,8 @@ async function runQuery(
 
   ipcPolling = false;
   if (queryActivityTimer) clearTimeout(queryActivityTimer);
-  log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}, interruptedDuringQuery: ${interruptedDuringQuery}`);
-  return { newSessionId, lastAssistantUuid, closedDuringQuery, interruptedDuringQuery };
+  log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}, interruptedDuringQuery: ${interruptedDuringQuery}, drainDetectedDuringQuery: ${drainDetectedDuringQuery}`);
+  return { newSessionId, lastAssistantUuid, closedDuringQuery, interruptedDuringQuery, drainDetectedDuringQuery };
   } catch (err) {
     ipcPolling = false;
     if (queryActivityTimer) clearTimeout(queryActivityTimer);
@@ -1416,7 +1441,9 @@ async function main(): Promise<void> {
       // Check for _drain sentinel: finish current query then exit for turn boundary.
       // Unlike _close (where the host sends SIGTERM), _drain requires self-exit
       // because the host is waiting for the process to terminate naturally.
-      if (shouldDrain()) {
+      // Check both: the flag set during pollIpcDuringQuery AND the sentinel file
+      // (in case it was written after the query's IPC polling stopped).
+      if (queryResult.drainDetectedDuringQuery || shouldDrain()) {
         log('Drain sentinel detected, exiting for turn boundary');
         writeOutput({ status: 'drained', result: null, newSessionId: sessionId });
         process.exit(0);
