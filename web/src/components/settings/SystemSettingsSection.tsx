@@ -323,8 +323,8 @@ export function SystemSettingsSection({ setNotice, setError }: SystemSettingsSec
       <div className="border-t border-border pt-6 space-y-5">
         <h3 className="text-sm font-semibold text-foreground">计费系统</h3>
 
-        <div className="flex items-center justify-between">
-          <div>
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex-1">
             <label className="block text-sm font-medium text-foreground">启用计费</label>
             <p className="text-xs text-muted-foreground mt-0.5">
               开启后普通用户必须先有余额才能使用，管理员可在后台进行充扣和套餐分配

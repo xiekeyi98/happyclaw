@@ -15,6 +15,7 @@ interface UserFeishuConfig {
   enabled: boolean;
   connected: boolean;
   updatedAt: string | null;
+  replyThreadingMode?: 'auto' | 'agent';
 }
 
 interface OAuthStatus {
@@ -270,6 +271,34 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
                   请先保存飞书 App ID 和 App Secret
                 </p>
               )}
+            </div>
+
+            {/* Reply Threading Mode */}
+            <div className="pt-3 border-t border-slate-100">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex-1">
+                  <h4 className="text-xs font-semibold text-slate-700">Agent 自主回复模式</h4>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    开启后 Agent 可以指定回复哪条消息（需要 Agent 在 send_message 中传入 reply_to_message_id）。
+                    关闭时自动选择触发消息作为回复目标。
+                  </p>
+                </div>
+                <ToggleSwitch
+                  checked={config?.replyThreadingMode === 'agent'}
+                  onChange={async (v) => {
+                    try {
+                      const data = await api.put<UserFeishuConfig>('/api/config/user-im/feishu', {
+                        replyThreadingMode: v ? 'agent' : 'auto',
+                      });
+                      setConfig(data);
+                      setNotice(`回复线程模式已切换为${v ? ' Agent 自主' : '自动'}模式`);
+                    } catch (err) {
+                      setError(getErrorMessage(err, '切换回复模式失败'));
+                    }
+                  }}
+                  aria-label="Agent 自主回复模式"
+                />
+              </div>
             </div>
           </>
         )}

@@ -1489,7 +1489,8 @@ function escapeXml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-function formatMessages(messages: NewMessage[], isShared = false): string {
+function formatMessages(messages: NewMessage[], isShared = false, agentReplyMode = false): string {
+  const agentMode = agentReplyMode;
   const lines = messages.map((m) => {
     const content = isShared ? `[${m.sender_name}] ${m.content}` : m.content;
     const sourceJid = m.source_jid || m.chat_jid;
@@ -1499,7 +1500,10 @@ function formatMessages(messages: NewMessage[], isShared = false): string {
       const chatId = extractChatId(sourceJid);
       sourceAttr = ` source="${escapeXml(channelType)}:${escapeXml(chatId)}"`;
     }
-    return `<message sender="${escapeXml(m.sender_name)}"${sourceAttr} time="${m.timestamp}">${escapeXml(content)}</message>`;
+    // In agent-driven reply threading mode, expose message IDs so the agent
+    // can specify which message to reply to via send_message(reply_to_message_id=...)
+    const idAttr = agentMode ? ` id="${escapeXml(m.id)}"` : '';
+    return `<message sender="${escapeXml(m.sender_name)}"${sourceAttr}${idAttr} time="${m.timestamp}">${escapeXml(content)}</message>`;
   });
   return `<messages>\n${lines.join('\n')}\n</messages>`;
 }
@@ -1633,7 +1637,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   const shared = isGroupShared(group.folder);
-  const prompt = formatMessages(missedMessages, shared);
+  // Check if this user has Feishu agent-reply mode enabled
+  const ownerUserId = effectiveGroup.created_by;
+  const feishuAgentReply = ownerUserId
+    ? getUserFeishuConfig(ownerUserId)?.replyThreadingMode === 'agent'
+    : false;
+  const prompt = formatMessages(missedMessages, shared, feishuAgentReply);
 
   const images = collectMessageImages(chatJid, missedMessages);
   const imagesForAgent = images.length > 0 ? images : undefined;
@@ -2311,7 +2320,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (errorImChannel) {
       // Build card button for rate-limit errors linking to the usage page
       const isRateLimit = /limit|rate.?limit|quota|resets/i.test(errorDetail);
-      const webPublicUrl = process.env.WEB_PUBLIC_URL;
+      const webPublicUrl = getSystemSettings().webPublicUrl || process.env.WEB_PUBLIC_URL;
       const sendOpts: IMSendOptions = {};
       if (isRateLimit && webPublicUrl) {
         sendOpts.cardExtraElements = [
@@ -2770,8 +2779,13 @@ function startIpcWatcher(): void {
                         data.text,
                         sourceGroup,
                       );
-                      // Resolve reply target from trigger messages map (set when agent launched),
-                      // falling back to DB lookup if the map is empty (e.g., task-spawned agents).
+                      // Resolve reply target: in 'agent' mode, prefer agent-supplied replyToMsgId;
+                      // in 'auto' mode (or fallback), use trigger map → DB lookup.
+                      const ownerUserId = sourceGroupEntry?.created_by;
+                      const feishuReplyMode = ownerUserId
+                        ? getUserFeishuConfig(ownerUserId)?.replyThreadingMode
+                        : undefined;
+                      const agentReplyMode = feishuReplyMode === 'agent';
                       const triggerMap = triggerMessagesByFolder.get(sourceGroup);
                       const triggerMsg = triggerMap?.get(data.targetChannel);
                       const lastInbound = triggerMsg || getLastInboundMessage(
@@ -2779,8 +2793,10 @@ function startIpcWatcher(): void {
                         data.targetChannel, // source_jid = the IM channel
                       );
                       const sendOptions: IMSendOptions = {};
-                      // Always reply to the triggering message, not the latest in chat
-                      if (lastInbound?.id) {
+                      // Agent-driven reply: use agent-specified ID if available and mode is 'agent'
+                      if (agentReplyMode && data.replyToMsgId) {
+                        sendOptions.replyToMsgId = data.replyToMsgId;
+                      } else if (lastInbound?.id) {
                         sendOptions.replyToMsgId = lastInbound.id;
                       }
                       if (data.urgent && lastInbound?.sender) {

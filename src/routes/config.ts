@@ -1374,11 +1374,13 @@ configRoutes.get('/user-im/feishu', authMiddleware, (c) => {
         enabled: false,
         updatedAt: null,
         connected,
+        replyThreadingMode: 'auto',
       });
     }
     return c.json({
       ...toPublicFeishuProviderConfig(config, 'runtime'),
       connected,
+      replyThreadingMode: config.replyThreadingMode ?? 'auto',
     });
   } catch (err) {
     logger.error({ err }, 'Failed to load user Feishu config');
@@ -1413,11 +1415,12 @@ configRoutes.put('/user-im/feishu', authMiddleware, async (c) => {
   }
 
   const current = getUserFeishuConfig(user.id);
-  const next = {
+  const next: { appId: string; appSecret: string; enabled: boolean; updatedAt: string | null; replyThreadingMode?: 'auto' | 'agent' } = {
     appId: current?.appId || '',
     appSecret: current?.appSecret || '',
     enabled: current?.enabled ?? true,
     updatedAt: current?.updatedAt || null,
+    replyThreadingMode: current?.replyThreadingMode ?? 'auto',
   };
   if (typeof validation.data.appId === 'string') {
     const appId = validation.data.appId.trim();
@@ -1435,12 +1438,16 @@ configRoutes.put('/user-im/feishu', authMiddleware, async (c) => {
     // First-time config with credentials should connect immediately.
     next.enabled = true;
   }
+  if (validation.data.replyThreadingMode) {
+    next.replyThreadingMode = validation.data.replyThreadingMode;
+  }
 
   try {
     const saved = saveUserFeishuConfig(user.id, {
       appId: next.appId,
       appSecret: next.appSecret,
       enabled: next.enabled,
+      replyThreadingMode: next.replyThreadingMode,
     });
 
     // Hot-reload: reconnect user's Feishu channel

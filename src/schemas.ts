@@ -242,6 +242,7 @@ export const SystemSettingsSchema = z.object({
   traceRetentionDays: z.number().int().min(1).max(90).optional(),
   feishuApiDomain: z.string().min(1).max(100).optional(),
   feishuDocDomain: z.string().min(1).max(100).optional(),
+  webPublicUrl: z.string().max(200).optional(),
 });
 
 export const AppearanceConfigSchema = z.object({
@@ -377,6 +378,7 @@ export const FeishuConfigSchema = z
     appSecret: z.string().max(2000).optional(),
     clearAppSecret: z.boolean().optional(),
     enabled: z.boolean().optional(),
+    replyThreadingMode: z.enum(['auto', 'agent']).optional(),
   })
   .refine(
     (data) =>

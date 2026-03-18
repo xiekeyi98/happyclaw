@@ -213,6 +213,8 @@ interface StoredFeishuProviderConfigV1 {
   /** Encrypted OAuth tokens (separate from IM secret). */
   oauthSecret?: EncryptedSecrets;
   oauthAuthorizedAt?: string;
+  /** Reply threading mode: 'auto' (trigger-based) or 'agent' (agent-specified). */
+  replyThreadingMode?: 'auto' | 'agent';
 }
 
 interface StoredTelegramProviderConfigV1 {
@@ -2319,6 +2321,8 @@ export interface UserFeishuConfig {
   appSecret: string;
   enabled?: boolean;
   updatedAt: string | null;
+  /** Reply threading mode: 'auto' (trigger-based) or 'agent' (agent-specified). */
+  replyThreadingMode?: 'auto' | 'agent';
 }
 
 export interface UserFeishuOAuthTokens {
@@ -2377,6 +2381,7 @@ export function getUserFeishuConfig(userId: string): UserFeishuConfig | null {
       appSecret: secret.appSecret,
       enabled: stored.enabled,
       updatedAt: stored.updatedAt || null,
+      replyThreadingMode: stored.replyThreadingMode === 'agent' ? 'agent' : 'auto',
     };
   } catch (err) {
     logger.warn({ err, userId }, 'Failed to read user Feishu config');
@@ -2393,6 +2398,7 @@ export function saveUserFeishuConfig(
     appSecret: normalizeSecret(next.appSecret, 'appSecret'),
     enabled: next.enabled,
     updatedAt: new Date().toISOString(),
+    replyThreadingMode: next.replyThreadingMode === 'agent' ? 'agent' : 'auto',
   };
 
   // Preserve existing OAuth tokens when saving IM config
@@ -2404,6 +2410,7 @@ export function saveUserFeishuConfig(
     enabled: normalized.enabled,
     updatedAt: normalized.updatedAt || new Date().toISOString(),
     secret: encryptFeishuSecret({ appSecret: normalized.appSecret }),
+    replyThreadingMode: normalized.replyThreadingMode,
     ...(existing?.oauthSecret ? { oauthSecret: existing.oauthSecret } : {}),
     ...(existing?.oauthAuthorizedAt
       ? { oauthAuthorizedAt: existing.oauthAuthorizedAt }
@@ -2723,6 +2730,8 @@ export interface SystemSettings {
   // Feishu
   feishuApiDomain: string;
   feishuDocDomain: string;
+  // Web
+  webPublicUrl: string;
 }
 
 const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
@@ -2748,6 +2757,7 @@ const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
   traceRetentionDays: 7,
   feishuApiDomain: 'open.feishu.cn',
   feishuDocDomain: 'bytedance.larkoffice.com',
+  webPublicUrl: '',
 };
 
 function parseIntEnv(envVar: string | undefined, fallback: number): number {
@@ -2863,6 +2873,10 @@ function readSystemSettingsFromFile(): SystemSettings | null {
       typeof raw.feishuDocDomain === 'string' && raw.feishuDocDomain
         ? raw.feishuDocDomain
         : DEFAULT_SYSTEM_SETTINGS.feishuDocDomain,
+    webPublicUrl:
+      typeof raw.webPublicUrl === 'string'
+        ? raw.webPublicUrl
+        : DEFAULT_SYSTEM_SETTINGS.webPublicUrl,
   };
 }
 
@@ -2946,6 +2960,8 @@ function buildEnvFallbackSettings(): SystemSettings {
       process.env.FEISHU_API_DOMAIN || DEFAULT_SYSTEM_SETTINGS.feishuApiDomain,
     feishuDocDomain:
       process.env.FEISHU_DOC_DOMAIN || DEFAULT_SYSTEM_SETTINGS.feishuDocDomain,
+    webPublicUrl:
+      process.env.WEB_PUBLIC_URL || DEFAULT_SYSTEM_SETTINGS.webPublicUrl,
   };
 }
 
@@ -3039,6 +3055,10 @@ export function saveSystemSettings(
   if (merged.turnMaxBatchMs > 300000) merged.turnMaxBatchMs = 300000; // max 5 min
   if (merged.traceRetentionDays < 1) merged.traceRetentionDays = 1; // min 1 day
   if (merged.traceRetentionDays > 90) merged.traceRetentionDays = 90; // max 90 days
+  // webPublicUrl: strip trailing slash
+  if (typeof merged.webPublicUrl === 'string') {
+    merged.webPublicUrl = merged.webPublicUrl.replace(/\/+$/, '');
+  }
   // Feishu domains: strip protocol prefix and trailing slash
   for (const key of ['feishuApiDomain', 'feishuDocDomain'] as const) {
     if (typeof merged[key] === 'string') {

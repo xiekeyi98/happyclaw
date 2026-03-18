@@ -86,6 +86,7 @@ export interface SystemSettings {
   turnBatchWindowMs: number;
   turnMaxBatchMs: number;
   traceRetentionDays: number;
+  webPublicUrl: string;
 }
 
 export type SettingsTab = 'claude' | 'registration' | 'appearance' | 'system' | 'profile' | 'my-channels' | 'security' | 'groups' | 'memory' | 'skills' | 'mcp-servers' | 'agent-definitions' | 'users' | 'about' | 'bindings';
