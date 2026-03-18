@@ -2031,10 +2031,24 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // leading to duplicate replies.
     const errorDetail = output.error || lastError || '未知错误';
 
+    // Resolve IM source for error forwarding
+    const errorSourceJid =
+      missedMessages[missedMessages.length - 1]?.source_jid || chatJid;
+    const errorImChannel = getChannelType(errorSourceJid)
+      ? errorSourceJid
+      : null;
+
     // 上下文溢出错误：跳过重试，提交游标，通知用户
     if (errorDetail.startsWith('context_overflow:')) {
       const overflowMsg = errorDetail.replace(/^context_overflow:\s*/, '');
       sendSystemMessage(chatJid, 'context_overflow', overflowMsg);
+      if (errorImChannel) {
+        sendImWithFailTracking(
+          errorImChannel,
+          `⚠️ 上下文溢出：${overflowMsg}`,
+          [],
+        );
+      }
       logger.warn(
         { group: group.name, error: overflowMsg },
         'Context overflow detected, skipping retry',
@@ -2044,6 +2058,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
 
     sendSystemMessage(chatJid, 'agent_error', errorDetail);
+    // Forward agent errors to IM so users aren't left waiting in silence
+    if (errorImChannel) {
+      sendImWithFailTracking(
+        errorImChannel,
+        `⚠️ Agent 错误：${errorDetail}`,
+        [],
+      );
+    }
     logger.warn(
       { group: group.name, error: errorDetail },
       'Agent error (no reply sent), keeping cursor at previous position for retry',
