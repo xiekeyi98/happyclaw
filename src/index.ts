@@ -168,6 +168,19 @@ const queue = new GroupQueue();
 const EMPTY_CURSOR: MessageCursor = { timestamp: '', id: '' };
 const terminalWarmupInFlight = new Set<string>();
 
+/**
+ * Per-folder map of trigger messages: sourceJid → { id, sender } of the last
+ * inbound message from that IM channel in the current batch.
+ * Set by processGroupMessages when launching the agent, read by IPC handler
+ * to thread replies and resolve urgent targets accurately.
+ * This avoids querying DB for "last inbound" which may return a message
+ * the agent hasn't seen (arrived after agent started).
+ */
+const triggerMessagesByFolder = new Map<
+  string,
+  Map<string, { id: string; sender: string }>
+>();
+
 // IPC delivery watchdog: track piped messages awaiting agent acknowledgement.
 // When the agent-runner consumes an IPC message it emits a status stream_event
 // "ipc_message_received".  If no ack arrives within IPC_DELIVERY_TIMEOUT_MS the
@@ -1627,6 +1640,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   }
 
+  // Build per-sourceJid trigger message map so IPC handler can thread
+  // replies to the correct triggering message (not whatever DB says is latest).
+  const triggerMap = new Map<string, { id: string; sender: string }>();
+  for (const m of missedMessages) {
+    const srcJid = m.source_jid || m.chat_jid;
+    // Last message per source wins (chronological order)
+    triggerMap.set(srcJid, { id: m.id, sender: m.sender });
+  }
+  triggerMessagesByFolder.set(effectiveGroup.folder, triggerMap);
+
   const output = await runAgent(
     effectiveGroup,
     prompt,
@@ -2054,6 +2077,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         'Context overflow detected, skipping retry',
       );
       commitCursor();
+      triggerMessagesByFolder.delete(effectiveGroup.folder);
       return true;
     }
 
@@ -2095,12 +2119,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       { group: group.name, error: errorDetail },
       'Agent error (no reply sent), keeping cursor at previous position for retry',
     );
+    triggerMessagesByFolder.delete(effectiveGroup.folder);
     return false;
   }
 
   // Final fallback for silent-success paths (no visible reply).
   commitCursor();
 
+  triggerMessagesByFolder.delete(effectiveGroup.folder);
   return true;
 }
 
@@ -2507,8 +2533,11 @@ function startIpcWatcher(): void {
                         data.text,
                         sourceGroup,
                       );
-                      // Resolve reply target and urgent recipient from DB
-                      const lastInbound = getLastInboundMessage(
+                      // Resolve reply target from trigger messages map (set when agent launched),
+                      // falling back to DB lookup if the map is empty (e.g., task-spawned agents).
+                      const triggerMap = triggerMessagesByFolder.get(sourceGroup);
+                      const triggerMsg = triggerMap?.get(data.targetChannel);
+                      const lastInbound = triggerMsg || getLastInboundMessage(
                         data.chatJid,
                         data.targetChannel, // source_jid = the IM channel
                       );
@@ -3483,6 +3512,15 @@ async function startMessageLoop(): Promise<void> {
             intent,
           );
           if (sendResult === 'sent') {
+            // Update trigger message map with the piped batch so IPC reply
+            // handler threads to the latest message the agent actually sees.
+            const existingTrigger = triggerMessagesByFolder.get(group.folder);
+            if (existingTrigger) {
+              for (const m of messagesToSend) {
+                const srcJid = m.source_jid || m.chat_jid;
+                existingTrigger.set(srcJid, { id: m.id, sender: m.sender });
+              }
+            }
             logger.info(
               {
                 chatJid,
