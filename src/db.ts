@@ -1073,7 +1073,12 @@ export function initDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_turns_jid ON turns(chat_jid, started_at);
   `);
 
-  const SCHEMA_VERSION = '30';
+  // v31: index on turns.result_message_id for trace lookup by message
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_turns_result_msg ON turns(result_message_id);
+  `);
+
+  const SCHEMA_VERSION = '31';
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
@@ -5308,6 +5313,27 @@ export function cleanupOldTurns(olderThanDays: number): number {
     .prepare('DELETE FROM turns WHERE started_at < ?')
     .run(cutoff);
   return result.changes;
+}
+
+export function getTurnByResultMessageId(
+  messageId: string,
+): TurnRow | undefined {
+  return db
+    .prepare('SELECT * FROM turns WHERE result_message_id = ? LIMIT 1')
+    .get(messageId) as TurnRow | undefined;
+}
+
+export function getMessageIdsWithTrace(
+  messageIds: string[],
+): Set<string> {
+  if (messageIds.length === 0) return new Set();
+  const placeholders = messageIds.map(() => '?').join(',');
+  const rows = db
+    .prepare(
+      `SELECT result_message_id FROM turns WHERE result_message_id IN (${placeholders}) AND trace_file IS NOT NULL`,
+    )
+    .all(...messageIds) as Array<{ result_message_id: string }>;
+  return new Set(rows.map((r) => r.result_message_id));
 }
 
 export function markStaleTurnsAsError(): void {

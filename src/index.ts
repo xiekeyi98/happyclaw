@@ -139,7 +139,6 @@ import {
   broadcastStreamEvent,
   broadcastAgentStatus,
   broadcastBillingUpdate,
-  broadcastBlocksFinalized,
   broadcastRunnerState,
   broadcastTurnEvent,
   shutdownTerminals,
@@ -1949,11 +1948,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           // Only reset idle timer on actual results, not session-update markers (result: null)
           resetIdleTimer();
 
-          // Finalize streaming blocks for this round and broadcast to clients
-          const finalBlocks = streamingBlocksManager.finalize(group.folder);
-          if (finalBlocks.length > 0 && lastReplyMsgId) {
-            broadcastBlocksFinalized(chatJid, lastReplyMsgId, finalBlocks);
-          }
+          // Finalize streaming blocks for this round (kept for turn trace persistence)
+          streamingBlocksManager.finalize(group.folder);
         }
 
         if (result.status === 'error') {

@@ -52,6 +52,8 @@ import {
   getUserPinnedGroups,
   pinGroup,
   unpinGroup,
+  getTurnByResultMessageId,
+  getMessageIdsWithTrace,
 } from '../db.js';
 import { logger } from '../logger.js';
 import {
@@ -74,6 +76,23 @@ import path from 'node:path';
 import net from 'node:net';
 import { z } from 'zod';
 import { broadcastNewMessage, invalidateAllowedUserCache } from '../web.js';
+import { loadTurnTrace } from '../turn-trace.js';
+
+/** Annotate AI reply messages with has_trace flag based on turns table */
+function annotateMessagesWithTrace(
+  messages: Array<{ id: string; is_from_me: boolean; has_trace?: boolean }>,
+): void {
+  const aiMsgIds = messages
+    .filter((m) => m.is_from_me)
+    .map((m) => m.id);
+  if (aiMsgIds.length === 0) return;
+  const traceSet = getMessageIdsWithTrace(aiMsgIds);
+  for (const msg of messages) {
+    if (traceSet.has(msg.id)) {
+      msg.has_trace = true;
+    }
+  }
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -955,22 +974,6 @@ groupRoutes.post('/:jid/interrupt', authMiddleware, async (c) => {
   return c.json({ success: true, interrupted });
 });
 
-// GET /api/groups/:jid/streaming-blocks - 获取当前运行中的 streaming blocks 快照
-groupRoutes.get('/:jid/streaming-blocks', authMiddleware, async (c) => {
-  const jid = c.req.param('jid');
-  const group = getRegisteredGroup(jid);
-  if (!group) return c.json({ completedBlocks: [], currentState: null });
-  const authUser = c.get('user') as AuthUser;
-  if (
-    !canAccessGroup({ id: authUser.id, role: authUser.role }, { ...group, jid })
-  ) {
-    return c.json({ completedBlocks: [], currentState: null });
-  }
-  const { streamingBlocksManager } = await import('../streaming-blocks.js');
-  const snapshot = streamingBlocksManager.getSnapshot(group.folder);
-  return c.json(snapshot || { completedBlocks: [], currentState: null });
-});
-
 // POST /api/groups/:jid/reset-session - 重置会话上下文
 // Optional body: { agentId?: string } — when provided, only reset that agent's session
 groupRoutes.post('/:jid/reset-session', authMiddleware, async (c) => {
@@ -1250,11 +1253,13 @@ groupRoutes.get('/:jid/messages', authMiddleware, async (c) => {
     const virtualJid = `${jid}#agent:${agentIdParam}`;
     if (after) {
       const messages = getMessagesAfter(virtualJid, after, limit);
+      annotateMessagesWithTrace(messages);
       return c.json({ messages });
     }
     const rows = getMessagesPage(virtualJid, before, limit + 1);
     const hasMore = rows.length > limit;
     const messages = hasMore ? rows.slice(0, limit) : rows;
+    annotateMessagesWithTrace(messages);
     return c.json({ messages, hasMore });
   }
 
@@ -1283,23 +1288,47 @@ groupRoutes.get('/:jid/messages', authMiddleware, async (c) => {
     // 单 JID 走原路径
     if (after) {
       const messages = getMessagesAfter(jid, after, limit);
+      annotateMessagesWithTrace(messages);
       return c.json({ messages });
     }
     const rows = getMessagesPage(jid, before, limit + 1);
     const hasMore = rows.length > limit;
     const messages = hasMore ? rows.slice(0, limit) : rows;
+    annotateMessagesWithTrace(messages);
     return c.json({ messages, hasMore });
   }
 
   // 多 JID 合并查询
   if (after) {
     const messages = getMessagesAfterMulti(queryJids, after, limit);
+    annotateMessagesWithTrace(messages);
     return c.json({ messages });
   }
   const rows = getMessagesPageMulti(queryJids, before, limit + 1);
   const hasMore = rows.length > limit;
   const messages = hasMore ? rows.slice(0, limit) : rows;
+  annotateMessagesWithTrace(messages);
   return c.json({ messages, hasMore });
+});
+
+// GET /api/groups/:jid/messages/:messageId/trace - 获取消息的执行轨迹
+groupRoutes.get('/:jid/messages/:messageId/trace', authMiddleware, (c) => {
+  const jid = c.req.param('jid');
+  const messageId = c.req.param('messageId');
+  const group = getRegisteredGroup(jid);
+  if (!group) return c.json({ blocks: [] });
+  const authUser = c.get('user') as AuthUser;
+  if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
+    return c.json({ blocks: [] });
+  }
+
+  const turn = getTurnByResultMessageId(messageId);
+  if (!turn?.trace_file) return c.json({ blocks: [] });
+
+  const trace = loadTurnTrace(turn.trace_file);
+  if (!trace) return c.json({ blocks: [] });
+
+  return c.json({ blocks: trace.blocks });
 });
 
 // DELETE /api/groups/:jid/messages/:messageId - 删除单条消息

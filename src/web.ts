@@ -1276,25 +1276,6 @@ export function broadcastRunnerState(
   );
 }
 
-export function broadcastBlocksFinalized(
-  chatJid: string,
-  messageId: string,
-  blocks: import('./streaming-blocks.js').StreamingBlock[],
-): void {
-  const jid = normalizeHomeJid(chatJid);
-  const allowedUserIds = getGroupAllowedUserIds(chatJid);
-  safeBroadcast(
-    {
-      type: 'blocks_finalized',
-      chatJid: jid,
-      messageId,
-      blocks,
-    } as WsMessageOut,
-    isHostGroupJid(chatJid),
-    allowedUserIds,
-  );
-}
-
 export function broadcastTurnEvent(chatJid: string, event: StreamEvent): void {
   const jid = normalizeHomeJid(chatJid);
   const allowedUserIds = getGroupAllowedUserIds(chatJid);

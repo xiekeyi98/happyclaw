@@ -33,24 +33,6 @@ export interface StreamingBlock {
   hookOutcome?: string;
 }
 
-export interface StreamingBlocksSnapshot {
-  completedBlocks: StreamingBlock[];
-  currentState: {
-    activeTools: Array<{
-      toolName: string;
-      toolUseId: string;
-      startTime: number;
-      skillName?: string;
-      toolInputSummary?: string;
-    }>;
-    partialText: string;
-    thinkingText: string;
-    isThinking: boolean;
-    systemStatus: string | null;
-    activeHook: { hookName: string; hookEvent: string } | null;
-  };
-}
-
 // ── 常量 ──
 
 const MAX_BLOCKS = 200;
@@ -208,20 +190,6 @@ export class StreamingBlockAccumulator {
     }
   }
 
-  getSnapshot(): StreamingBlocksSnapshot {
-    return {
-      completedBlocks: [...this.completedBlocks],
-      currentState: {
-        activeTools: Array.from(this.activeTools.values()),
-        partialText: this.partialText,
-        thinkingText: this.thinkingText,
-        isThinking: this.isThinking,
-        systemStatus: this.systemStatus,
-        activeHook: this.activeHook,
-      },
-    };
-  }
-
   /** Finalize all open blocks and return the complete blocks list for this round. */
   finalize(): StreamingBlock[] {
     this.finalizeTextBlock();
@@ -314,11 +282,6 @@ class StreamingBlocksManager {
       this.accumulators.set(folder, acc);
     }
     return acc;
-  }
-
-  getSnapshot(folder: string): StreamingBlocksSnapshot | null {
-    const acc = this.accumulators.get(folder);
-    return acc ? acc.getSnapshot() : null;
   }
 
   finalize(folder: string): StreamingBlock[] {

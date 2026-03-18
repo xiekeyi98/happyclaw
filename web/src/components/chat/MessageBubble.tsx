@@ -1,8 +1,8 @@
-import { useState, useRef, memo } from 'react';
-import { Copy, Check, ChevronDown, ChevronUp, Ellipsis } from 'lucide-react';
+import { useState, useRef, useCallback, memo } from 'react';
+import { Copy, Check, ChevronDown, ChevronUp, Ellipsis, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { Message, type StreamingBlock } from '../../stores/chat';
+import { Message, useChatStore } from '../../stores/chat';
 import { useAuthStore } from '../../stores/auth';
 import { EmojiAvatar } from '../common/EmojiAvatar';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -15,31 +15,52 @@ interface MessageBubbleProps {
   message: Message;
   showTime: boolean;
   thinkingContent?: string;
-  blocksContent?: StreamingBlock[];
+  chatJid: string;
   isShared?: boolean;
 }
 
-/** Collapsed execution trace for AI messages. */
-function ExecutionTrace({ blocks }: { blocks: StreamingBlock[] }) {
+/** Collapsed execution trace for AI messages — loads blocks from API on expand. */
+function ExecutionTrace({ messageId, chatJid }: { messageId: string; chatJid: string }) {
   const [expanded, setExpanded] = useState(false);
-  const toolBlocks = blocks.filter(b => b.type === 'tool');
-  const statusBlocks = blocks.filter(b => b.type === 'status');
-  const summary = [
-    toolBlocks.length > 0 ? `${toolBlocks.length} tool calls` : '',
-    statusBlocks.length > 0 ? `${statusBlocks.length} status` : '',
-  ].filter(Boolean).join(', ');
+  const [loading, setLoading] = useState(false);
+  const blocks = useChatStore(s => s.traceCache[messageId]);
+  const loadTrace = useChatStore(s => s.loadTrace);
+
+  const handleExpand = useCallback(async () => {
+    if (!expanded && !blocks) {
+      setLoading(true);
+      await loadTrace(chatJid, messageId);
+      setLoading(false);
+    }
+    setExpanded(!expanded);
+  }, [expanded, blocks, loadTrace, chatJid, messageId]);
+
+  const toolBlocks = blocks?.filter(b => b.type === 'tool') ?? [];
+  const statusBlocks = blocks?.filter(b => b.type === 'status') ?? [];
+  const summary = blocks
+    ? [
+        toolBlocks.length > 0 ? `${toolBlocks.length} tool calls` : '',
+        statusBlocks.length > 0 ? `${statusBlocks.length} status` : '',
+      ].filter(Boolean).join(', ')
+    : '...';
 
   return (
     <div className="mt-2 pt-2 border-t border-border/50">
       <button
-        onClick={() => setExpanded(!expanded)}
+        onClick={handleExpand}
         className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors w-full text-left"
       >
         <span>&#9776;</span>
-        <span>执行轨迹 ({summary})</span>
-        {expanded ? <ChevronUp className="w-3 h-3 ml-auto" /> : <ChevronDown className="w-3 h-3 ml-auto" />}
+        <span>执行轨迹{blocks ? ` (${summary})` : ''}</span>
+        {loading ? (
+          <Loader2 className="w-3 h-3 ml-auto animate-spin" />
+        ) : expanded ? (
+          <ChevronUp className="w-3 h-3 ml-auto" />
+        ) : (
+          <ChevronDown className="w-3 h-3 ml-auto" />
+        )}
       </button>
-      {expanded && (
+      {expanded && blocks && (
         <div className="mt-1.5 space-y-0 max-h-48 overflow-y-auto">
           {blocks.map((block) => {
             if (block.type === 'tool') {
@@ -191,7 +212,7 @@ function TokenUsageDisplay({ tokenUsageJson }: { tokenUsageJson: string }) {
   );
 }
 
-export const MessageBubble = memo(function MessageBubble({ message, showTime, thinkingContent, blocksContent, isShared }: MessageBubbleProps) {
+export const MessageBubble = memo(function MessageBubble({ message, showTime, thinkingContent, chatJid, isShared }: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
   const [lightboxState, setLightboxState] = useState<{ images: string[]; index: number } | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
@@ -451,8 +472,8 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
         )}
 
         {/* Execution trace (compact mode) */}
-        {isAI && blocksContent && blocksContent.length > 0 && (
-          <ExecutionTrace blocks={blocksContent} />
+        {isAI && message.has_trace && (
+          <ExecutionTrace messageId={message.id} chatJid={chatJid} />
         )}
 
         {lightboxState && (
@@ -691,8 +712,8 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
             )}
 
             {/* Execution trace */}
-            {message.is_from_me && blocksContent && blocksContent.length > 0 && (
-              <ExecutionTrace blocks={blocksContent} />
+            {message.is_from_me && message.has_trace && (
+              <ExecutionTrace messageId={message.id} chatJid={chatJid} />
             )}
           </div>
         </div>
@@ -720,8 +741,9 @@ export const MessageBubble = memo(function MessageBubble({ message, showTime, th
   prev.message.id === next.message.id &&
   prev.message.content === next.message.content &&
   prev.message.token_usage === next.message.token_usage &&
+  prev.message.has_trace === next.message.has_trace &&
   prev.showTime === next.showTime &&
   prev.thinkingContent === next.thinkingContent &&
-  prev.blocksContent === next.blocksContent &&
+  prev.chatJid === next.chatJid &&
   prev.isShared === next.isShared
 );
