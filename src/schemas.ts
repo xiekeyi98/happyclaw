@@ -385,7 +385,8 @@ export const FeishuConfigSchema = z
       typeof data.appId === 'string' ||
       typeof data.appSecret === 'string' ||
       data.clearAppSecret === true ||
-      typeof data.enabled === 'boolean',
+      typeof data.enabled === 'boolean' ||
+      typeof data.replyThreadingMode === 'string',
     { message: 'At least one config field must be provided' },
   );
 

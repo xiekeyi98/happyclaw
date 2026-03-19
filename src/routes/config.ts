@@ -1469,6 +1469,7 @@ configRoutes.put('/user-im/feishu', authMiddleware, async (c) => {
     return c.json({
       ...toPublicFeishuProviderConfig(saved, 'runtime'),
       connected,
+      replyThreadingMode: saved.replyThreadingMode ?? 'auto',
     });
   } catch (err) {
     const message =
