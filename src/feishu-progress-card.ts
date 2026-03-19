@@ -155,7 +155,7 @@ export class ProgressCardController {
 
   /**
    * Feed a StreamEvent into the progress card.
-   * Creates the card lazily on first tool_use_start.
+   * Creates the card lazily on first thinking or tool_use_start event.
    */
   feedEvent(event: StreamEvent): void {
     const type = event.eventType;
@@ -175,15 +175,6 @@ export class ProgressCardController {
         skillName: event.skillName,
       });
       this.dirty = true;
-
-      // Lazy creation: only create card when first tool starts
-      if (this.state === 'idle') {
-        this.state = 'creating';
-        this.createCard().catch((err) => {
-          logger.warn({ err, chatId: this.chatId }, 'Progress card: create failed');
-          this.state = 'error';
-        });
-      }
     } else if (type === 'tool_use_end' && event.toolUseId) {
       const active = this.activeTools.get(event.toolUseId);
       if (active) {
@@ -203,6 +194,15 @@ export class ProgressCardController {
         if (event.skillName) active.skillName = event.skillName;
         this.dirty = true;
       }
+    }
+
+    // Lazy creation: create card on first thinking or tool event
+    if (this.dirty && this.state === 'idle') {
+      this.state = 'creating';
+      this.createCard().catch((err) => {
+        logger.warn({ err, chatId: this.chatId }, 'Progress card: create failed');
+        this.state = 'error';
+      });
     }
 
     if (this.dirty && this.state === 'active') {
