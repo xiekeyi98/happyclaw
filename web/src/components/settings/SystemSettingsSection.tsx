@@ -446,10 +446,11 @@ export function SystemSettingsSection({ setNotice, setError }: SystemSettingsSec
         <div>
           <label className="block text-sm font-medium text-foreground mb-1">公开访问地址</label>
           <Input
-            type="text"
+            type="url"
             value={webPublicUrl}
             onChange={(e) => setWebPublicUrl(e.target.value)}
             placeholder="https://your-domain.com"
+            maxLength={200}
             className="max-w-md"
           />
           <p className="text-xs text-muted-foreground mt-1">

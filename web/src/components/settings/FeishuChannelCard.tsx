@@ -91,6 +91,7 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
   const [toggling, setToggling] = useState(false);
   const [oauthStatus, setOauthStatus] = useState<OAuthStatus | null>(null);
   const [oauthLoading, setOauthLoading] = useState(false);
+  const [savingThreadingMode, setSavingThreadingMode] = useState(false);
 
   const enabled = config?.enabled ?? false;
 
@@ -341,7 +342,11 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
                 </div>
                 <ToggleSwitch
                   checked={config?.replyThreadingMode === 'agent'}
+                  disabled={savingThreadingMode}
                   onChange={async (v) => {
+                    setSavingThreadingMode(true);
+                    setNotice(null);
+                    setError(null);
                     try {
                       const data = await api.put<UserFeishuConfig>('/api/config/user-im/feishu', {
                         replyThreadingMode: v ? 'agent' : 'auto',
@@ -350,6 +355,8 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
                       setNotice(`回复线程模式已切换为${v ? ' Agent 自主' : '自动'}模式`);
                     } catch (err) {
                       setError(getErrorMessage(err, '切换回复模式失败'));
+                    } finally {
+                      setSavingThreadingMode(false);
                     }
                   }}
                   aria-label="Agent 自主回复模式"

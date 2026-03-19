@@ -2698,6 +2698,51 @@ export function saveUserQQConfig(
   return normalized;
 }
 
+// ─── Per-user IM general settings (plain JSON, no encryption) ────
+
+export interface UserImGeneralConfig {
+  autoUnbindOnSendFailure: boolean;
+  updatedAt: string | null;
+}
+
+export function getUserImGeneralConfig(
+  userId: string,
+): UserImGeneralConfig {
+  const filePath = path.join(userImDir(userId), 'general.json');
+  try {
+    if (!fs.existsSync(filePath)) {
+      return { autoUnbindOnSendFailure: true, updatedAt: null };
+    }
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    return {
+      autoUnbindOnSendFailure: parsed.autoUnbindOnSendFailure === true,
+      updatedAt:
+        typeof parsed.updatedAt === 'string' ? parsed.updatedAt : null,
+    };
+  } catch (err) {
+    logger.warn({ err, userId }, 'Failed to read user IM general config');
+    return { autoUnbindOnSendFailure: true, updatedAt: null };
+  }
+}
+
+export function saveUserImGeneralConfig(
+  userId: string,
+  next: Omit<UserImGeneralConfig, 'updatedAt'>,
+): UserImGeneralConfig {
+  const config: UserImGeneralConfig = {
+    autoUnbindOnSendFailure: next.autoUnbindOnSendFailure,
+    updatedAt: new Date().toISOString(),
+  };
+  const dir = userImDir(userId);
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, 'general.json');
+  const tmp = `${filePath}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+  fs.renameSync(tmp, filePath);
+  return config;
+}
+
 // ─── System settings (plain JSON, no encryption) ─────────────────
 
 const SYSTEM_SETTINGS_FILE = path.join(

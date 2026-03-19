@@ -107,6 +107,7 @@ import {
   saveUserTelegramConfig,
   updateAllSessionCredentials,
   getUserIMPreferences,
+  getUserImGeneralConfig,
 } from './runtime-config.js';
 import type {
   FeishuConnectConfig,
@@ -294,6 +295,13 @@ function unbindImGroup(jid: string, reason: string): void {
   imSendFailCounts.delete(jid);
   imHealthCheckFailCounts.delete(jid);
   logger.info({ jid, agentId, targetMainJid }, reason);
+}
+
+/** Check per-user IM setting to decide whether auto-unbind on failure is enabled. */
+function shouldAutoUnbindOnFailure(jid: string): boolean {
+  const group = registeredGroups[jid] ?? getRegisteredGroup(jid);
+  if (!group?.created_by) return true;
+  return getUserImGeneralConfig(group.created_by).autoUnbindOnSendFailure;
 }
 
 /**
@@ -507,7 +515,7 @@ function sendImWithFailTracking(
       logger.warn({ imJid, err }, 'Failed to relay message to IM');
       const count = (imSendFailCounts.get(imJid) ?? 0) + 1;
       imSendFailCounts.set(imJid, count);
-      if (count >= IM_SEND_FAIL_THRESHOLD) {
+      if (count >= IM_SEND_FAIL_THRESHOLD && shouldAutoUnbindOnFailure(imJid)) {
         try {
           unbindImGroup(
             imJid,
@@ -2893,7 +2901,7 @@ function startIpcWatcher(): void {
                         logger.warn({ imJid: data.targetChannel, err }, 'Failed to relay message to IM');
                         const count = (imSendFailCounts.get(data.targetChannel) ?? 0) + 1;
                         imSendFailCounts.set(data.targetChannel, count);
-                        if (count >= IM_SEND_FAIL_THRESHOLD) {
+                        if (count >= IM_SEND_FAIL_THRESHOLD && shouldAutoUnbindOnFailure(data.targetChannel)) {
                           try {
                             unbindImGroup(data.targetChannel, 'Auto-unbound IM group after consecutive send failures');
                           } catch (unbindErr) {
@@ -2953,12 +2961,35 @@ function startIpcWatcher(): void {
 
                       // 只在有 targetChannel 时发送到 IM
                       if (data.targetChannel) {
+                        // Resolve reply target for Feishu images (same logic as send_message)
+                        let imageReplyToMsgId: string | undefined;
+                        const isFeishuTarget = data.targetChannel.startsWith('feishu:');
+                        if (isFeishuTarget) {
+                          const ownerUserId = sourceGroupEntry?.created_by;
+                          const agentReplyMode = ownerUserId
+                            ? getUserFeishuConfig(ownerUserId)?.replyThreadingMode === 'agent'
+                            : false;
+                          if (agentReplyMode && data.replyToMsgId) {
+                            imageReplyToMsgId = data.replyToMsgId;
+                          } else {
+                            const triggerMap = triggerMessagesByFolder.get(sourceGroup);
+                            const triggerMsg = triggerMap?.get(data.targetChannel);
+                            const lastInbound = triggerMsg || getLastInboundMessage(
+                              data.chatJid,
+                              data.targetChannel,
+                            );
+                            if (lastInbound?.id) {
+                              imageReplyToMsgId = lastInbound.id;
+                            }
+                          }
+                        }
                         await imManager.sendImage(
                           data.targetChannel,
                           imageBuffer,
                           mimeType,
                           caption,
                           fileName,
+                          imageReplyToMsgId,
                         );
                       }
 
@@ -5399,11 +5430,13 @@ async function checkImBindingsHealth(): Promise<void> {
         // Chat not reachable — could be temporary (connection down, API permission issue)
         const count = (imHealthCheckFailCounts.get(jid) ?? 0) + 1;
         imHealthCheckFailCounts.set(jid, count);
-        if (count >= IM_HEALTH_CHECK_FAIL_THRESHOLD) {
+        if (count >= IM_HEALTH_CHECK_FAIL_THRESHOLD && shouldAutoUnbindOnFailure(jid)) {
           unbindImGroup(
             jid,
             'IM group not reachable after multiple checks, auto-unbinding',
           );
+        } else if (count >= IM_HEALTH_CHECK_FAIL_THRESHOLD) {
+          logger.warn({ jid, count }, 'IM health check threshold reached but auto-unbind disabled');
         } else {
           logger.debug(
             {

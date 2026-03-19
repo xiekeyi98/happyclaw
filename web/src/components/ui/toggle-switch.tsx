@@ -1,7 +1,7 @@
 interface ToggleSwitchProps {
   checked: boolean;
   disabled?: boolean;
-  onChange: (checked: boolean) => void;
+  onChange: (checked: boolean) => void | Promise<void>;
   'aria-label'?: string;
 }
 

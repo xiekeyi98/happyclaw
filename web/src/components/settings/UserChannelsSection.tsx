@@ -5,6 +5,7 @@ import type { SettingsNotification } from './types';
 import { FeishuChannelCard } from './FeishuChannelCard';
 import { TelegramChannelCard } from './TelegramChannelCard';
 import { QQChannelCard } from './QQChannelCard';
+import { ImGeneralCard } from './ImGeneralCard';
 
 interface UserIMPreferences {
   autoCreateWorkspaceForGroups?: boolean;
@@ -126,6 +127,7 @@ export function UserChannelsSection({ setNotice, setError }: UserChannelsSection
       <FeishuChannelCard setNotice={setNotice} setError={setError} />
       <TelegramChannelCard setNotice={setNotice} setError={setError} />
       <QQChannelCard setNotice={setNotice} setError={setError} />
+      <ImGeneralCard setNotice={setNotice} setError={setError} />
     </div>
   );
 }

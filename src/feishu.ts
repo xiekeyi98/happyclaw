@@ -91,6 +91,7 @@ export interface FeishuConnection {
     mimeType: string,
     caption?: string,
     fileName?: string,
+    replyToMsgId?: string,
   ): Promise<void>;
   sendFile(chatId: string, filePath: string, fileName: string): Promise<void>;
   sendReaction(chatId: string, isTyping: boolean): Promise<void>;
@@ -1724,6 +1725,7 @@ export function createFeishuConnection(
       mimeType: string,
       caption?: string,
       _fileName?: string /* Feishu image API has no filename field, intentionally unused */,
+      replyToMsgId?: string,
     ): Promise<void> {
       if (!client) {
         logger.warn(
@@ -1759,7 +1761,7 @@ export function createFeishuConnection(
         const receive_id_type = chatId.startsWith('oc_')
           ? 'chat_id'
           : 'open_id';
-        const lastMsgId = lastMessageIdByChat.get(chatId);
+        const lastMsgId = replyToMsgId || lastMessageIdByChat.get(chatId);
         const content = JSON.stringify({ image_key: imageKey });
 
         if (lastMsgId) {

@@ -25,6 +25,7 @@ import {
   FeishuConfigSchema,
   TelegramConfigSchema,
   QQConfigSchema,
+  ImGeneralConfigSchema,
   RegistrationConfigSchema,
   AppearanceConfigSchema,
   SystemSettingsSchema,
@@ -68,6 +69,8 @@ import {
   saveUserTelegramConfig,
   getUserQQConfig,
   saveUserQQConfig,
+  getUserImGeneralConfig,
+  saveUserImGeneralConfig,
   updateAllSessionCredentials,
   detectLocalClaudeCode,
   importLocalClaudeCredentials,
@@ -2124,6 +2127,28 @@ configRoutes.put('/user-im/preferences', authMiddleware, async (c) => {
   const user = c.get('user') as AuthUser;
   const body = UserIMPreferencesSchema.parse(await c.req.json());
   const saved = saveUserIMPreferences(user.id, body);
+  return c.json(saved);
+});
+
+// ─── Per-user IM general settings ────────────────────────────────
+
+configRoutes.get('/user-im/general', authMiddleware, (c) => {
+  const user = c.get('user') as AuthUser;
+  const config = getUserImGeneralConfig(user.id);
+  return c.json(config);
+});
+
+configRoutes.put('/user-im/general', authMiddleware, async (c) => {
+  const user = c.get('user') as AuthUser;
+  const body = await c.req.json();
+  const parsed = ImGeneralConfigSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      { error: 'Invalid config', details: parsed.error.format() },
+      400,
+    );
+  }
+  const saved = saveUserImGeneralConfig(user.id, parsed.data);
   return c.json(saved);
 });
 

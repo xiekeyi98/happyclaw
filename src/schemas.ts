@@ -424,6 +424,10 @@ export const QQConfigSchema = z
     { message: 'At least one config field must be provided' },
   );
 
+export const ImGeneralConfigSchema = z.object({
+  autoUnbindOnSendFailure: z.boolean(),
+});
+
 export const ClaudeCustomEnvSchema = z.object({
   customEnv: z.record(z.string().max(256), z.string().max(4096)),
 });

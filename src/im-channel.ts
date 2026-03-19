@@ -87,6 +87,7 @@ export interface IMChannel {
     mimeType: string,
     caption?: string,
     fileName?: string,
+    replyToMsgId?: string,
   ): Promise<void>;
   setTyping(chatId: string, isTyping: boolean): Promise<void>;
   isConnected(): boolean;
@@ -189,6 +190,7 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
       mimeType: string,
       caption?: string,
       fileName?: string,
+      replyToMsgId?: string,
     ): Promise<void> {
       if (!inner) {
         logger.warn(
@@ -197,7 +199,7 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
         );
         return;
       }
-      await inner.sendImage(chatId, imageBuffer, mimeType, caption, fileName);
+      await inner.sendImage(chatId, imageBuffer, mimeType, caption, fileName, replyToMsgId);
     },
 
     async setTyping(chatId: string, isTyping: boolean): Promise<void> {

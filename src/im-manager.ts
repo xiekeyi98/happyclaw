@@ -152,6 +152,7 @@ class IMConnectionManager {
     mimeType: string,
     caption?: string,
     fileName?: string,
+    replyToMsgId?: string,
   ): Promise<void> {
     const channelType = getChannelType(jid);
     if (!channelType) {
@@ -162,7 +163,7 @@ class IMConnectionManager {
     const chatId = extractChatId(jid);
     const channel = this.findChannelForJid(jid, channelType);
     if (channel?.sendImage) {
-      await channel.sendImage(chatId, imageBuffer, mimeType, caption, fileName);
+      await channel.sendImage(chatId, imageBuffer, mimeType, caption, fileName, replyToMsgId);
       return;
     }
 
