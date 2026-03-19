@@ -106,6 +106,7 @@ import {
   saveUserFeishuConfig,
   saveUserTelegramConfig,
   updateAllSessionCredentials,
+  getUserIMPreferences,
 } from './runtime-config.js';
 import type {
   FeishuConnectConfig,
@@ -835,19 +836,14 @@ function handleStatusCommand(chatJid: string): string {
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
   if (!group) return '当前 IM 未绑定工作区';
 
-  const lookupGroup = (jid: string) =>
-    registeredGroups[jid] ?? getRegisteredGroup(jid);
-  const location = resolveLocationInfo(
-    group,
-    lookupGroup,
-    getAgent,
-    findGroupNameByFolder,
-  );
+  const location = getLocationForGroup(group);
 
   const queueStatus = queue.getStatus();
   const settings = getSystemSettings();
 
   // Check if the current group's folder is active or queued
+  const lookupGroup = (jid: string) =>
+    registeredGroups[jid] ?? getRegisteredGroup(jid);
   const groupState = queueStatus.groups.find((g) => {
     const rg = lookupGroup(g.jid);
     return rg?.folder === location.folder;
@@ -873,18 +869,26 @@ function handleStatusCommand(chatJid: string): string {
   );
 }
 
-function handleWhereCommand(chatJid: string): string {
-  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
-  if (!group) return '当前 IM 未绑定工作区';
-
+/**
+ * Resolve location info for a registered group (shared helper to avoid
+ * duplicating the lookupGroup closure + resolveLocationInfo call).
+ */
+function getLocationForGroup(group: RegisteredGroup) {
   const lookupGroup = (jid: string) =>
     registeredGroups[jid] ?? getRegisteredGroup(jid);
-  const location = resolveLocationInfo(
+  return resolveLocationInfo(
     group,
     lookupGroup,
     getAgent,
     findGroupNameByFolder,
   );
+}
+
+function handleWhereCommand(chatJid: string): string {
+  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+  if (!group) return '当前 IM 未绑定工作区';
+
+  const location = getLocationForGroup(group);
 
   const lines = [`📍 当前绑定: ${location.locationLine}`];
   if (location.replyPolicy) {
@@ -907,12 +911,37 @@ function handleBindCommand(chatJid: string, rawSpec: string): string {
   if (!group) return '当前 IM 未绑定工作区';
   const userId = group.created_by;
   if (!userId) return '无法确定当前聊天所属用户';
-  if (!rawSpec)
-    return '用法: /bind <workspace> 或 /bind <workspace>/<agent短ID>';
+
+  // Helper: build location info + workspace list block (shared by no-args and not-found cases)
+  const buildBindHelpLines = (prefix: string[]): string => {
+    const location = getLocationForGroup(group);
+    const lines = [...prefix, `📍 当前绑定: ${location.locationLine}`];
+    if (location.replyPolicy) {
+      lines.push(`🔁 回复策略: ${location.replyPolicy}`);
+    }
+    const workspaces = collectWorkspaces(userId);
+    if (workspaces.length > 0) {
+      lines.push('');
+      lines.push(
+        formatWorkspaceList(
+          workspaces,
+          location.folder,
+          group.target_agent_id || null,
+        ),
+      );
+    }
+    lines.push('');
+    lines.push('用法: /bind <名称> 或 /bind <工作区>/<agent短ID>');
+    return lines.join('\n');
+  };
+
+  if (!rawSpec) {
+    return buildBindHelpLines([]) + '\n/new <名称> — 创建新工作区并绑定\n/unbind — 解绑回默认';
+  }
 
   const resolved = resolveBindingTarget(userId, rawSpec);
   if (!resolved) {
-    return '未找到目标。先用 /list 查看工作区和 agent 短 ID，再执行 /bind <workspace>/<agent短ID>';
+    return buildBindHelpLines([`未找到「${rawSpec}」。`, '']);
   }
 
   const updated: RegisteredGroup = {
@@ -4065,12 +4094,29 @@ async function ensureDockerRunning(): Promise<void> {
 function buildOnNewChat(
   userId: string,
   homeFolder: string,
-): (chatJid: string, chatName: string) => void {
-  return (chatJid, chatName) => {
+): (chatJid: string, chatName: string, chatType?: 'p2p' | 'group') => void {
+  return (chatJid, chatName, chatType) => {
     const existing = registeredGroups[chatJid];
     if (existing) {
-      // Already owned by this user — nothing to do
-      if (existing.created_by === userId) return;
+      // Already owned by this user — update names if we now have a better name
+      if (existing.created_by === userId) {
+        if (chatName && chatName !== '飞书群聊' && chatName !== '飞书私聊') {
+          // Update the IM chat name (chats table)
+          updateChatName(chatJid, chatName);
+          // Update the bound workspace name if it still has the generic name
+          if (existing.target_main_jid && existing.target_main_jid !== `web:${homeFolder}`) {
+            const targetGroup = registeredGroups[existing.target_main_jid];
+            if (targetGroup && (!targetGroup.name || targetGroup.name === '飞书群聊')) {
+              // Update registered_groups name (used by /api/groups)
+              targetGroup.name = chatName;
+              setRegisteredGroup(existing.target_main_jid, targetGroup);
+              // Update chats table name (used by some UI paths)
+              updateChatName(existing.target_main_jid, chatName);
+            }
+          }
+        }
+        return;
+      }
 
       // Don't override groups with explicit agent routing configured.
       if (existing.target_agent_id) return;
@@ -4101,17 +4147,76 @@ function buildOnNewChat(
       }
       return;
     }
-    registerGroup(chatJid, {
-      name: chatName,
-      folder: homeFolder,
-      added_at: new Date().toISOString(),
-      created_by: userId,
-      target_main_jid: `web:${homeFolder}`,
-    });
-    logger.info(
-      { chatJid, chatName, userId, homeFolder },
-      'Auto-registered IM chat',
-    );
+
+    // Auto-create independent workspace for group chats if preference is on
+    const prefs = getUserIMPreferences(userId);
+    const shouldAutoCreate =
+      chatType === 'group' &&
+      prefs.autoCreateWorkspaceForGroups === true;
+
+    if (shouldAutoCreate) {
+      // 1. Create a new workspace
+      const newJid = `web:${crypto.randomUUID()}`;
+      const folder = `flow-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const now = new Date().toISOString();
+      const execMode = prefs.autoCreateExecutionMode || 'host';
+
+      const newGroup: RegisteredGroup = {
+        name: chatName,
+        folder,
+        added_at: now,
+        executionMode: execMode,
+        created_by: userId,
+      };
+      registerGroup(newJid, newGroup);
+      ensureChatExists(newJid);
+      updateChatName(newJid, chatName);
+      addGroupMember(folder, userId, 'owner', userId);
+
+      // 2. Register the IM group and bind to the new workspace
+      registerGroup(chatJid, {
+        name: chatName,
+        folder: homeFolder,
+        added_at: now,
+        created_by: userId,
+        target_main_jid: newJid,
+        reply_policy: 'source_only',
+      });
+
+      logger.info(
+        { chatJid, chatName, userId, newFolder: folder, newJid },
+        'Auto-created workspace for IM group chat',
+      );
+
+      // 如果群名未能获取（通用名），在工作区写一条系统提示
+      if (chatName === '飞书群聊') {
+        storeMessageDirect(
+          `system-${Date.now()}`,
+          newJid,
+          'system',
+          '系统',
+          '⚠️ 无法获取飞书群名称，工作区暂时命名为"飞书群聊"。请在飞书开放平台为应用开通 `im:chat:readonly` 权限后，发送新消息即可自动更新名称。',
+          now,
+          true,
+        );
+        broadcastToWebClients(newJid,
+          '⚠️ 无法获取飞书群名称，工作区暂时命名为"飞书群聊"。请在飞书开放平台为应用开通 `im:chat:readonly` 权限后，发送新消息即可自动更新名称。',
+        );
+      }
+    } else {
+      // Default: route to home
+      registerGroup(chatJid, {
+        name: chatName,
+        folder: homeFolder,
+        added_at: new Date().toISOString(),
+        created_by: userId,
+        target_main_jid: `web:${homeFolder}`,
+      });
+      logger.info(
+        { chatJid, chatName, userId, homeFolder },
+        'Auto-registered IM chat',
+      );
+    }
   };
 }
 
@@ -4140,7 +4245,7 @@ function buildTelegramBotAddedHandler(
 ): (chatJid: string, chatName: string) => void {
   const onNewChat = buildOnNewChat(userId, homeFolder);
   return (chatJid: string, chatName: string) => {
-    onNewChat(chatJid, chatName);
+    onNewChat(chatJid, chatName, 'group'); // bot-added is always a group
     const welcome =
       `已加入「${chatName}」！当前绑定到默认工作区。\n\n` +
       `/new <名称> — 新建工作区并绑定此群\n` +
@@ -4358,7 +4463,8 @@ async function connectUserIMChannels(
   };
   const resolveEffectiveChatJid = buildResolveEffectiveChatJid();
   const onAgentMessage = buildOnAgentMessage();
-  const onBotAddedToGroup = buildOnNewChat(userId, homeFolder); // reuse same logic: auto-register
+  const onBotAddedToGroup = (chatJid: string, chatName: string) =>
+    onNewChat(chatJid, chatName, 'group'); // bot-added is always a group
   const onBotRemovedFromGroup = buildOnBotRemovedFromGroup();
 
   let feishu = false;

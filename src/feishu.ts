@@ -34,7 +34,7 @@ interface FeishuFileInfo {
 export interface ConnectOptions {
   onReady: () => void;
   /** 收到消息后调用，让调用方自动注册未知的飞书聊天 */
-  onNewChat?: (chatJid: string, chatName: string) => void;
+  onNewChat?: (chatJid: string, chatName: string, chatType?: 'p2p' | 'group') => void;
   /** 热重连时设置：丢弃 create_time 早于此时间戳（epoch ms）的消息，避免处理渠道关闭期间的堆积消息 */
   ignoreMessagesBefore?: number;
   /** 斜杠指令回调（如 /clear），返回回复文本或 null */
@@ -484,6 +484,7 @@ export function createFeishuConnection(
   const typingReactionByChat = new Map<string, string>();
   const knownChatIds = new Set<string>();
   const chatTypeById = new Map<string, string>(); // chatId → 'group' | 'p2p'
+  const chatNameById = new Map<string, string>(); // chatId → group name (from API/events)
   const lastCreateTimeByChat = new Map<string, number>();
 
   let client: lark.Client | null = null;
@@ -890,10 +891,34 @@ export function createFeishuConnection(
 
     const chatJid = `feishu:${chatId}`;
     const resolvedSenderName = senderName || getSenderName(senderOpenId);
-    const resolvedChatName = chatType === 'p2p' ? '飞书私聊' : '飞书群聊';
+
+    // 解析群名：优先缓存，缓存未命中时同步获取（确保 onNewChat 拿到真实群名）
+    let resolvedChatName: string;
+    if (chatType === 'p2p') {
+      resolvedChatName = '飞书私聊';
+    } else {
+      let groupName = chatNameById.get(chatId);
+      if (!groupName && client) {
+        try {
+          const res = await client.im.v1.chat.get({ path: { chat_id: chatId } });
+          if (res.data?.name) {
+            groupName = res.data.name;
+            chatNameById.set(chatId, groupName);
+          }
+        } catch (err: unknown) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          if (errMsg.includes('99991672') || errMsg.includes('im:chat')) {
+            logger.warn({ chatId }, '无法获取飞书群名称：应用缺少 im:chat:readonly 权限');
+          } else {
+            logger.warn({ chatId, err: errMsg }, '获取飞书群名称失败');
+          }
+        }
+      }
+      resolvedChatName = groupName ? `飞书-${groupName}` : '飞书群聊';
+    }
 
     // 先注册会话，确保 resolveGroupFolder 能正确解析 folder（含首条文件消息场景）
-    onNewChat?.(chatJid, resolvedChatName);
+    onNewChat?.(chatJid, resolvedChatName, chatType === 'p2p' ? 'p2p' : 'group');
 
     let attachmentsJson: string | undefined;
 
@@ -1431,6 +1456,7 @@ export function createFeishuConnection(
             if (!chatId) return;
             const chatJid = `feishu:${chatId}`;
             const chatName = data.name || '飞书群聊';
+            if (data.name) chatNameById.set(chatId, data.name);
             logger.info({ chatJid, chatName }, 'Bot added to Feishu group');
             connectOptions?.onBotAddedToGroup?.(chatJid, chatName);
           } catch (err) {
@@ -1907,6 +1933,7 @@ export function createFeishuConnection(
             if (chat.chat_id && chat.name) {
               updateChatName(`feishu:${chat.chat_id}`, chat.name);
               knownChatIds.add(chat.chat_id);
+              chatNameById.set(chat.chat_id, chat.name);
             }
           }
 
@@ -1942,7 +1969,7 @@ let _defaultInstance: FeishuConnection | null = null;
 export interface ConnectFeishuOptions {
   onReady: () => void;
   /** 收到消息后调用，让主模块自动注册未知的飞书聊天到主容器 */
-  onNewChat?: (chatJid: string, chatName: string) => void;
+  onNewChat?: (chatJid: string, chatName: string, chatType?: 'p2p' | 'group') => void;
   /** 热重连时设置：丢弃 create_time 早于此时间戳（epoch ms）的消息，避免处理渠道关闭期间的堆积消息 */
   ignoreMessagesBefore?: number;
 }
