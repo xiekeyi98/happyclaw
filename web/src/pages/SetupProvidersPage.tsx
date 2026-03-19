@@ -298,7 +298,9 @@ export function SetupProvidersPage() {
             <Link2 className="w-4 h-4 text-primary" />
             <h2 className="text-base font-semibold text-foreground">飞书配置（可选）</h2>
           </div>
-          <p className="text-xs text-muted-foreground mb-3">首装不预填任何默认值，全部由你手动输入。</p>
+          <p className="text-xs text-muted-foreground mb-3">
+            前往<a href="https://open.larkoffice.com/app?lang=zh-CN" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline mx-0.5">飞书开放平台</a>创建应用并获取凭据。首装不预填任何默认值，全部由你手动输入。
+          </p>
           <div className="grid md:grid-cols-2 gap-3">
             <div>
               <label className="block text-sm font-medium text-foreground mb-1">App ID</label>
