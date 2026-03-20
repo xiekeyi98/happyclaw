@@ -296,8 +296,8 @@ export class StreamEventProcessor {
       }
     }
 
-    // Track Task tool
-    if (block.name === 'Task' && block.id) {
+    // Track Task/Agent tool (SDK accepts both names; model typically uses "Agent")
+    if ((block.name === 'Task' || block.name === 'Agent') && block.id) {
       this.taskToolUseIds.add(block.id);
       this.emit({
         status: 'stream', result: null,
@@ -690,7 +690,7 @@ export class StreamEventProcessor {
 
     // Fallback: identify background Tasks and Teammate Tasks from complete input
     for (const block of content) {
-      if (block.type === 'tool_use' && block.name === 'Task' && block.id && block.input) {
+      if (block.type === 'tool_use' && (block.name === 'Task' || block.name === 'Agent') && block.id && block.input) {
         const taskInput = block.input as Record<string, unknown>;
         if (taskInput.run_in_background === true) {
           this.backgroundTaskToolUseIds.add(block.id);
