@@ -52,8 +52,9 @@ interface ChangeClassification {
 
 // ─── Constants ─────────────────────────────────────────────
 
-/** Hard timeout for the entire GPT review call (ms). Prevents blocking agent stop. */
-const REVIEW_TIMEOUT_MS = 15_000;
+/** Hard timeout for GPT review calls (ms). Major uses gpt-5.4 which needs more time. */
+const REVIEW_TIMEOUT_MAJOR_MS = 30_000;
+const REVIEW_TIMEOUT_MEDIUM_MS = 15_000;
 
 /** Max diff content per mutation to avoid token explosion */
 const MAX_DIFF_CHARS = 3000;
@@ -361,12 +362,15 @@ ${diffContent}
 ## 建议
 （无建议则写"无"）`;
 
-  const reasoningEffort = classification.level === 'major' ? 'high' : 'medium';
+  const isMajor = classification.level === 'major';
+  const model = isMajor ? 'gpt-5.4' : 'gpt-5.4-mini';
+  const reasoningEffort = isMajor ? 'high' : 'medium';
+  const timeoutMs = isMajor ? REVIEW_TIMEOUT_MAJOR_MS : REVIEW_TIMEOUT_MEDIUM_MS;
 
   // Try Codex API first (subscription, free)
   if (accessToken) {
     try {
-      return await callCodexApi(prompt, accessToken, reasoningEffort);
+      return await callCodexApi(prompt, accessToken, model, reasoningEffort, timeoutMs);
     } catch {
       // Fall through to Chat Completions
     }
@@ -374,13 +378,13 @@ ${diffContent}
 
   // Fallback to Chat Completions API
   if (apiKey) {
-    return await callChatCompletionsApi(prompt, apiKey, reasoningEffort);
+    return await callChatCompletionsApi(prompt, apiKey, model, reasoningEffort, timeoutMs);
   }
 
   throw new Error('No OpenAI credentials available for review');
 }
 
-async function callCodexApi(prompt: string, accessToken: string, effort: string): Promise<string> {
+async function callCodexApi(prompt: string, accessToken: string, model: string, effort: string, timeoutMs: number): Promise<string> {
   const response = await fetch(CODEX_API_URL, {
     method: 'POST',
     headers: {
@@ -388,13 +392,13 @@ async function callCodexApi(prompt: string, accessToken: string, effort: string)
       Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify({
-      model: 'gpt-5.4-mini',
+      model,
       instructions: '你是代码评审者。只指出真实问题，不做风格评论。简洁回复。',
       input: [{ role: 'user', content: prompt }],
       reasoning: { effort },
       stream: false,
     }),
-    signal: AbortSignal.timeout(REVIEW_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!response.ok) {
@@ -414,7 +418,7 @@ async function callCodexApi(prompt: string, accessToken: string, effort: string)
   throw new Error('No text in Codex response');
 }
 
-async function callChatCompletionsApi(prompt: string, apiKey: string, effort: string): Promise<string> {
+async function callChatCompletionsApi(prompt: string, apiKey: string, model: string, effort: string, timeoutMs: number): Promise<string> {
   const response = await fetch(CHAT_COMPLETIONS_API_URL, {
     method: 'POST',
     headers: {
@@ -422,14 +426,14 @@ async function callChatCompletionsApi(prompt: string, apiKey: string, effort: st
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: 'gpt-5.4-mini',
+      model,
       messages: [
         { role: 'system', content: '你是代码评审者。只指出真实问题，不做风格评论。简洁回复。' },
         { role: 'user', content: prompt },
       ],
       reasoning_effort: effort,
     }),
-    signal: AbortSignal.timeout(REVIEW_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!response.ok) {
