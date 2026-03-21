@@ -77,6 +77,16 @@ export class CrossModelPlugin implements ContextPlugin {
                 '可选：指定具体模型。Codex 订阅支持: gpt-5.4, gpt-5.4-mini, gpt-5.3-codex, codex-mini-latest。' +
                 'API Key 额外支持: gpt-5.4-nano, o3。不指定则使用默认模型 gpt-5.4-mini。',
             },
+            reasoning_effort: {
+              type: 'string',
+              enum: ['low', 'medium', 'high'],
+              description:
+                '推理深度。根据任务复杂度动态选择：' +
+                'high — 架构评审、安全审查、复杂方案设计（P0 场景）；' +
+                'medium — 代码 review、测试用例补全（P1 场景）；' +
+                'low — 简单问答、翻译、总结。' +
+                '不指定时根据 prompt 长度自动推断。',
+            },
           },
           required: ['prompt'],
         },
@@ -106,12 +116,30 @@ export class CrossModelPlugin implements ContextPlugin {
 
   // ─── Internal ─────────────────────────────────────────────
 
+  /**
+   * Infer reasoning effort from prompt characteristics if not explicitly specified.
+   * Longer, more complex prompts get higher effort.
+   */
+  private inferReasoningEffort(prompt: string): 'low' | 'medium' | 'high' {
+    const len = prompt.length;
+    // Keywords suggesting complex analysis
+    const complexKeywords = /架构|schema|migration|安全|认证|权限|并发|锁|删除|回滚|不可逆|评审|review|audit/i;
+    if (complexKeywords.test(prompt) || len > 3000) return 'high';
+    if (len > 1000) return 'medium';
+    return 'low';
+  }
+
   private async executeAskModel(args: Record<string, unknown>): Promise<ToolResult> {
     const prompt = String(args.prompt || '');
     const system = args.system ? String(args.system) : undefined;
     const model = args.model
       ? String(args.model)
       : (this.opts.openaiModel || process.env.CROSSMODEL_OPENAI_MODEL || 'gpt-5.4-mini');
+
+    // Resolve reasoning effort: explicit > auto-infer
+    const reasoningEffort = args.reasoning_effort
+      ? (String(args.reasoning_effort) as 'low' | 'medium' | 'high')
+      : this.inferReasoningEffort(prompt);
 
     if (!prompt.trim()) {
       return { content: 'Error: prompt is required', isError: true };
@@ -120,12 +148,12 @@ export class CrossModelPlugin implements ContextPlugin {
     // Prefer Codex (subscription, free) over Chat Completions (API key, paid)
     const accessToken = this.opts.openaiAccessToken || process.env.CROSSMODEL_OPENAI_ACCESS_TOKEN;
     if (accessToken) {
-      return this.callCodexApi(accessToken, model, prompt, system);
+      return this.callCodexApi(accessToken, model, prompt, system, reasoningEffort);
     }
 
     const apiKey = this.opts.openaiApiKey || process.env.CROSSMODEL_OPENAI_API_KEY;
     if (apiKey) {
-      return this.callChatCompletionsApi(apiKey, model, prompt, system);
+      return this.callChatCompletionsApi(apiKey, model, prompt, system, reasoningEffort);
     }
 
     return { content: 'Error: 未配置 OpenAI 认证（需要 OAuth token 或 API Key）', isError: true };
@@ -140,22 +168,30 @@ export class CrossModelPlugin implements ContextPlugin {
     model: string,
     prompt: string,
     system?: string,
+    reasoningEffort: 'low' | 'medium' | 'high' = 'low',
   ): Promise<ToolResult> {
     try {
+      const requestBody: Record<string, unknown> = {
+        model,
+        instructions: system || '',
+        input: [{ type: 'message', role: 'user', content: prompt }],
+        tools: [],
+        stream: true,
+        store: false,
+      };
+
+      // Enable reasoning with specified effort level
+      if (reasoningEffort !== 'low') {
+        requestBody.reasoning = { effort: reasoningEffort };
+      }
+
       const response = await fetch(CODEX_API_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${accessToken}`,
         },
-        body: JSON.stringify({
-          model,
-          instructions: system || '',
-          input: [{ type: 'message', role: 'user', content: prompt }],
-          tools: [],
-          stream: true,
-          store: false,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
@@ -211,10 +247,10 @@ export class CrossModelPlugin implements ContextPlugin {
       }
 
       if (!resultText) {
-        return { content: `**[${model}]** via Codex: (empty response)` };
+        return { content: `**[${model}]** via Codex (reasoning: ${reasoningEffort}): (empty response)` };
       }
 
-      return { content: `**[${model}]** via Codex 的回复：\n\n${resultText}${usageInfo}` };
+      return { content: `**[${model}]** via Codex (reasoning: ${reasoningEffort}) 的回复：\n\n${resultText}${usageInfo}` };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return { content: `Error calling Codex API: ${msg}`, isError: true };
@@ -229,6 +265,7 @@ export class CrossModelPlugin implements ContextPlugin {
     model: string,
     prompt: string,
     system?: string,
+    reasoningEffort: 'low' | 'medium' | 'high' = 'low',
   ): Promise<ToolResult> {
     const baseUrl = this.opts.openaiBaseUrl || process.env.CROSSMODEL_OPENAI_BASE_URL || 'https://api.openai.com/v1';
     const maxTokens = this.opts.maxTokens || 4096;
@@ -240,17 +277,24 @@ export class CrossModelPlugin implements ContextPlugin {
       }
       messages.push({ role: 'user', content: prompt });
 
+      const requestBody: Record<string, unknown> = {
+        model,
+        messages,
+        max_completion_tokens: maxTokens,
+      };
+
+      // Enable reasoning for Chat Completions API
+      if (reasoningEffort !== 'low') {
+        requestBody.reasoning_effort = reasoningEffort;
+      }
+
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({
-          model,
-          messages,
-          max_completion_tokens: maxTokens,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
@@ -269,7 +313,7 @@ export class CrossModelPlugin implements ContextPlugin {
       const reply = data.choices?.[0]?.message?.content || '(empty response)';
       const usage = data.usage;
 
-      let result = `**[${model}]** via API 的回复：\n\n${reply}`;
+      let result = `**[${model}]** via API (reasoning: ${reasoningEffort}) 的回复：\n\n${reply}`;
       if (usage) {
         result += `\n\n---\n_Token usage: ${usage.prompt_tokens} input + ${usage.completion_tokens} output = ${usage.total_tokens} total (API 计费)_`;
       }
