@@ -151,7 +151,7 @@ export class CrossModelPlugin implements ContextPlugin {
         body: JSON.stringify({
           model,
           instructions: system || '',
-          input: prompt,
+          input: [{ type: 'message', role: 'user', content: prompt }],
           tools: [],
           stream: true,
           store: false,
