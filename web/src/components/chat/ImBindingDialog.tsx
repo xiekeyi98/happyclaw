@@ -23,10 +23,7 @@ interface ImBindingDialogProps {
   onClose: () => void;
 }
 
-const ACTIVATION_MODE_OPTIONS = [
-  { value: 'always', label: '始终响应' },
-  { value: 'when_mentioned', label: '仅 @mention' },
-] as const;
+
 
 export function ImBindingDialog({ open, groupJid, agentId, agent, onClose }: ImBindingDialogProps) {
   const [imGroups, setImGroups] = useState<AvailableImGroup[]>([]);

@@ -516,15 +516,16 @@ export function createWeChatChannel(
       }
     },
 
-    async sendMessage(chatId: string, text: string): Promise<void> {
+    async sendMessage(chatId: string, text: string): Promise<string | undefined> {
       if (!inner) {
         logger.warn(
           { chatId },
           'WeChat channel not connected, skip sending message',
         );
-        return;
+        return undefined;
       }
       await inner.sendMessage(chatId, text);
+      return undefined;
     },
 
     async setTyping(chatId: string, isTyping: boolean): Promise<void> {

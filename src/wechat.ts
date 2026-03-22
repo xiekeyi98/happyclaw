@@ -680,10 +680,8 @@ export function createWeChatConnection(
       const senderId = `wechat:${fromUserId}`;
 
       if (targetJid !== jid) storeChatMetadata(targetJid, timestamp);
-      storeMessageDirect(id, targetJid, senderId, senderName, content, timestamp, false, {
-        attachments: attachmentsJson,
-        sourceJid: jid,
-      });
+      storeMessageDirect(id, targetJid, senderId, senderName, content, timestamp, false,
+        attachmentsJson, undefined, jid);
 
       broadcastNewMessage(
         targetJid,
