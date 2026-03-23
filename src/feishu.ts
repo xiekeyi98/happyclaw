@@ -1829,17 +1829,37 @@ export function createFeishuConnection(
         const ext = path.extname(fileName);
         const fileType = getFileType(ext);
 
-        // Upload file
-        const uploadResult = (await client.im.v1.file.create({
-          data: {
-            file_type: fileType,
-            file_name: fileName,
-            file: buffer,
-          },
-        })) as { data?: { file_key?: string } } | null;
+        let uploadResult: { file_key?: string; data?: { file_key?: string } } | null = null;
+        try {
+          uploadResult = (await client.im.v1.file.create({
+            data: {
+              file_type: fileType,
+              file_name: fileName,
+              file: buffer,
+            },
+          })) as { file_key?: string; data?: { file_key?: string } } | null;
+        } catch (uploadErr: unknown) {
+          const errMsg = uploadErr instanceof Error ? uploadErr.message : String(uploadErr);
+          const errCode = (uploadErr as Record<string, unknown>)?.code;
+          logger.error(
+            { chatId, fileName, fileType, errMsg, errCode },
+            'Feishu file.create SDK threw exception',
+          );
+          throw new Error(`文件上传失败：SDK 异常 ${errMsg}`);
+        }
 
-        const fileKey = uploadResult?.data?.file_key;
+        logger.info(
+          { chatId, fileName, fileType, uploadResult: JSON.stringify(uploadResult) },
+          'Feishu file.create response',
+        );
+
+        const fileKey =
+          uploadResult?.file_key ?? uploadResult?.data?.file_key;
         if (!fileKey) {
+          logger.error(
+            { chatId, fileName, uploadResult: JSON.stringify(uploadResult) },
+            'Feishu file upload returned no file_key',
+          );
           throw new Error('文件上传失败：未返回 file_key');
         }
 

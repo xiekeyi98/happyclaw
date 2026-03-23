@@ -161,21 +161,24 @@ export class MessagingPlugin implements ContextPlugin {
         execute: async (args: Record<string, unknown>): Promise<ToolResult> => {
           const filePath = String(args.filePath);
           let resolvedPath: string;
-          let relativePath: string;
+          let ipcFilePath: string;
 
           if (path.isAbsolute(filePath)) {
             resolvedPath = path.resolve(filePath);
+            // Absolute paths are allowed for send_file (read-only outbound send),
+            // but must still be within an approved workspace root (workspaceGroup
+            // or workspaceGlobal) to prevent arbitrary file exfiltration.
             if (!isWithinWorkspace(resolvedPath, ctx)) {
-              return { content: 'Error: file must be within the workspace directory.', isError: true };
+              return { content: 'Error: absolute path must be within workspace or global directory.', isError: true };
             }
-            relativePath = path.relative(ctx.workspaceGroup, resolvedPath);
+            ipcFilePath = resolvedPath;
           } else {
-            relativePath = filePath;
             resolvedPath = path.resolve(ctx.workspaceGroup, filePath);
             const safeRoot = ctx.workspaceGroup.endsWith(path.sep) ? ctx.workspaceGroup : ctx.workspaceGroup + path.sep;
             if (resolvedPath !== ctx.workspaceGroup && !resolvedPath.startsWith(safeRoot)) {
               return { content: 'Error: file must be within the workspace/group directory.', isError: true };
             }
+            ipcFilePath = filePath;
           }
 
           if (!fs.existsSync(resolvedPath)) {
@@ -191,7 +194,7 @@ export class MessagingPlugin implements ContextPlugin {
             type: 'send_file',
             chatJid: ctx.chatJid,
             targetChannel: args.channel,
-            filePath: relativePath,
+            filePath: ipcFilePath,
             fileName: args.fileName,
             timestamp: new Date().toISOString(),
           };

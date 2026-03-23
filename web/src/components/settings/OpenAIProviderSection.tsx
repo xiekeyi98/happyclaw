@@ -16,6 +16,7 @@ interface OpenAIConfigPublic {
   proxyUrl: string;
   hasOAuth: boolean;
   oauthExpired: boolean;
+  oauthProbeError: string | null;
   updatedAt: string | null;
 }
 
@@ -252,13 +253,23 @@ export function OpenAIProviderSection({ setNotice, setError }: OpenAIProviderSec
     <div className="space-y-6">
       {/* Status Overview */}
       <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-50 border border-slate-200">
-        <div className={`w-2.5 h-2.5 rounded-full ${config?.hasApiKey || config?.hasOAuth ? 'bg-green-500' : 'bg-slate-300'}`} />
-        <div className="text-sm">
-          {config?.hasOAuth && !config.oauthExpired && (
-            <span className="text-green-700 font-medium">ChatGPT OAuth 已连接</span>
+        <div className={`w-2.5 h-2.5 rounded-full ${
+          config?.hasOAuth && config.oauthExpired ? 'bg-red-500'
+            : config?.hasOAuth && config.oauthProbeError ? 'bg-amber-500'
+            : config?.hasApiKey || config?.hasOAuth ? 'bg-green-500'
+            : 'bg-slate-300'
+        }`} />
+        <div className="text-sm flex-1">
+          {config?.hasOAuth && !config.oauthExpired && !config.oauthProbeError && (
+            <span className="text-green-700 font-medium">ChatGPT OAuth 已连接（已验证）</span>
+          )}
+          {config?.hasOAuth && !config.oauthExpired && config.oauthProbeError && (
+            <span className="text-amber-700 font-medium">ChatGPT OAuth 探活异常：{config.oauthProbeError}</span>
           )}
           {config?.hasOAuth && config.oauthExpired && (
-            <span className="text-amber-700 font-medium">ChatGPT OAuth 已过期（需重新登录）</span>
+            <span className="text-red-700 font-medium">
+              ChatGPT OAuth 已失效{config.oauthProbeError ? `（${config.oauthProbeError}）` : '（需重新登录）'}
+            </span>
           )}
           {!config?.hasOAuth && config?.hasApiKey && (
             <span className="text-green-700 font-medium">API Key 已配置 ({config.apiKeyMasked})</span>
@@ -267,8 +278,11 @@ export function OpenAIProviderSection({ setNotice, setError }: OpenAIProviderSec
             <span className="text-slate-500">未配置认证信息</span>
           )}
         </div>
-        <button onClick={loadConfig} className="ml-auto p-1 rounded hover:bg-slate-200 transition-colors" title="刷新">
-          <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+        <button onClick={loadConfig} className="p-1 rounded hover:bg-slate-200 transition-colors" title="刷新（含探活）">
+          {loading
+            ? <Loader2 className="w-3.5 h-3.5 text-slate-400 animate-spin" />
+            : <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+          }
         </button>
       </div>
 

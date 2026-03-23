@@ -59,6 +59,18 @@
 - **工作目录**：`/workspace/group/` — 创建的文件保存在此处
 - **对话归档**：`conversations/` — 历史对话记录，可搜索回忆上下文
 
+## 命令执行安全
+
+**防卡死规则**：所有可能涉及网络下载的命令（`npx`、`pip install`、`curl`、`wget` 等）必须加 `timeout` 前缀或设置 Bash 工具的 `timeout` 参数，防止无限挂起导致 Agent 冻结。
+
+```bash
+# 正确
+timeout 60 npx -y some-package@latest <command>
+
+# 错误（网络抖动会永久卡死）
+npx -y some-package@latest <command>
+```
+
 ## 安全守则
 
 ### 红线操作（必须暂停并请求用户确认）
