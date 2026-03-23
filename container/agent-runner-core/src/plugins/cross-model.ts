@@ -26,6 +26,10 @@ export interface CrossModelPluginOptions {
   openaiModel?: string;
   /** Max tokens for response. Default: 4096 */
   maxTokens?: number;
+  /** API URL for dynamic credential refresh (e.g. http://localhost:3000). */
+  apiUrl?: string;
+  /** Internal Bearer token for dynamic credential refresh. */
+  apiToken?: string;
 }
 
 type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
@@ -121,6 +125,35 @@ export class CrossModelPlugin implements ContextPlugin {
   // ─── Internal ─────────────────────────────────────────────
 
   /**
+   * Fetch credentials dynamically from the HappyClaw internal API,
+   * falling back to constructor options and environment variables.
+   * This allows picking up refreshed OAuth tokens without process restart.
+   */
+  private async getCredentials(): Promise<{ accessToken?: string; apiKey?: string }> {
+    if (this.opts.apiUrl && this.opts.apiToken) {
+      try {
+        const res = await fetch(`${this.opts.apiUrl}/api/internal/memory/openai-credentials`, {
+          headers: { Authorization: `Bearer ${this.opts.apiToken}` },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (res.ok) {
+          const data = await res.json() as { accessToken?: string | null; apiKey?: string | null };
+          return {
+            accessToken: data.accessToken ?? undefined,
+            apiKey: data.apiKey ?? undefined,
+          };
+        }
+      } catch {
+        // Fallback to env vars on any error
+      }
+    }
+    return {
+      accessToken: this.opts.openaiAccessToken || process.env.CROSSMODEL_OPENAI_ACCESS_TOKEN,
+      apiKey: this.opts.openaiApiKey || process.env.CROSSMODEL_OPENAI_API_KEY,
+    };
+  }
+
+  /**
    * Infer reasoning effort from prompt characteristics if not explicitly specified.
    * Longer, more complex prompts get higher effort.
    */
@@ -149,15 +182,16 @@ export class CrossModelPlugin implements ContextPlugin {
       return { content: 'Error: prompt is required', isError: true };
     }
 
+    // Fetch credentials dynamically (supports token refresh without process restart)
+    const creds = await this.getCredentials();
+
     // Prefer Codex (subscription, free) over Chat Completions (API key, paid)
-    const accessToken = this.opts.openaiAccessToken || process.env.CROSSMODEL_OPENAI_ACCESS_TOKEN;
-    if (accessToken) {
-      return this.callCodexApi(accessToken, model, prompt, system, reasoningEffort);
+    if (creds.accessToken) {
+      return this.callCodexApi(creds.accessToken, model, prompt, system, reasoningEffort);
     }
 
-    const apiKey = this.opts.openaiApiKey || process.env.CROSSMODEL_OPENAI_API_KEY;
-    if (apiKey) {
-      return this.callChatCompletionsApi(apiKey, model, prompt, system, reasoningEffort);
+    if (creds.apiKey) {
+      return this.callChatCompletionsApi(creds.apiKey, model, prompt, system, reasoningEffort);
     }
 
     return { content: 'Error: 未配置 OpenAI 认证（需要 OAuth token 或 API Key）', isError: true };

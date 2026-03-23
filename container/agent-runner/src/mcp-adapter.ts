@@ -40,7 +40,10 @@ export function createContextManager(ctx: PluginContext): ContextManager {
       apiUrl: API_URL,
       apiToken: API_TOKEN,
     }))
-    .register(new CrossModelPlugin())
+    .register(new CrossModelPlugin({
+      apiUrl: API_URL,
+      apiToken: API_TOKEN,
+    }))
     .register(new DelegatePlugin());
 }
 
