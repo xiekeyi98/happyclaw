@@ -185,12 +185,14 @@ interface CardData {
   abortReason?: string;
   activeSubAgents: ActiveSubAgent[];
   completedSubAgents: CompletedSubAgent[];
+  latestCommentary?: string;
 }
 
 function buildProgressCard(data: CardData): object {
   const {
     activeTools, completedTools, isThinking, thinkingText,
     elapsedMs, state, abortReason, activeSubAgents, completedSubAgents,
+    latestCommentary,
   } = data;
   const elements: Array<Record<string, unknown>> = [];
 
@@ -201,6 +203,14 @@ function buildProgressCard(data: CardData): object {
     tag: 'markdown',
     content: `${statusEmoji} **${statusLabel}** · ⏱ ${formatElapsed(elapsedMs)}`,
   });
+
+  // Commentary: human-readable explanation updated in-place (no new message)
+  if (latestCommentary && state === 'active') {
+    elements.push({
+      tag: 'markdown',
+      content: `💬 ${latestCommentary}`,
+    });
+  }
 
   // Thinking indicator with full content
   if (isThinking && state === 'active') {
@@ -291,6 +301,7 @@ export class ProgressCardController {
   private completedSubAgents: CompletedSubAgent[] = [];
   private isThinking = false;
   private thinkingText = '';
+  private latestCommentary = '';
   private dirty = false;
   private abortReason?: string;
   private patchFailCount = 0;
@@ -527,6 +538,18 @@ export class ProgressCardController {
     this.clearFlushTimer();
   }
 
+  /**
+   * Update the commentary text shown in the progress card.
+   * Called by im-commentary instead of creating a new IM message.
+   */
+  addCommentary(text: string): void {
+    this.latestCommentary = text;
+    this.dirty = true;
+    if (this.state === 'active') {
+      this.scheduleFlush();
+    }
+  }
+
   /** Build CardData snapshot for buildProgressCard. */
   private getCardData(state: 'active' | 'completed' | 'aborted'): CardData {
     return {
@@ -539,6 +562,7 @@ export class ProgressCardController {
       abortReason: this.abortReason,
       activeSubAgents: Array.from(this.activeSubAgents.values()),
       completedSubAgents: this.completedSubAgents,
+      latestCommentary: this.latestCommentary || undefined,
     };
   }
 

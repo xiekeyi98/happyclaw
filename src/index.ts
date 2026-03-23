@@ -2009,16 +2009,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           // IPC-injected Feishu chats that share the same workspace.
           feedProgressSessionsForFolder(group.folder, result.streamEvent);
 
-          // IM Commentary: send human-readable tool explanations to IM (fire-and-forget)
+          // IM Commentary: update the progress card with human-readable explanation (fire-and-forget)
           const _se = result.streamEvent;
-          if (_se.eventType === 'tool_use_start' && feishuConfig?.imCommentary && sourceChannel) {
+          if (_se.eventType === 'tool_use_start' && feishuConfig?.imCommentary && progressCard) {
             sendToolCommentary({
               folder: group.folder,
               toolName: _se.toolName ?? '',
               toolInputSummary: _se.toolInputSummary,
               isNested: _se.isNested ?? false,
               useGpt: feishuConfig?.imCommentaryUseGpt ?? false,
-              sendMessage: (text) => imManager.sendMessage(sourceChannel, text).then(() => undefined),
+              onCommentary: (text) => progressCard.addCommentary(text),
             }).catch(() => {});
           }
 

@@ -57,9 +57,10 @@ export async function sendToolCommentary(opts: {
   toolInputSummary?: string;
   isNested: boolean;
   useGpt: boolean;
-  sendMessage: (text: string) => Promise<void>;
+  /** Called with the generated commentary text. Update the progress card or send a message. */
+  onCommentary: (text: string) => void;
 }): Promise<void> {
-  const { folder, toolName, toolInputSummary, isNested, useGpt, sendMessage } = opts;
+  const { folder, toolName, toolInputSummary, isNested, useGpt, onCommentary } = opts;
 
   // Only comment on top-level tool calls
   if (isNested) return;
@@ -87,7 +88,7 @@ export async function sendToolCommentary(opts: {
   try {
     const explanation = await generateExplanation(toolName, toolInputSummary, useGpt);
     if (explanation) {
-      await sendMessage(`🔧 ${explanation}`);
+      onCommentary(explanation);
     }
   } catch (err) {
     logger.debug({ err, folder, toolName }, 'im-commentary: failed to send');
