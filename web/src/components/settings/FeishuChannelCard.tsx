@@ -17,6 +17,7 @@ interface UserFeishuConfig {
   updatedAt: string | null;
   replyThreadingMode?: 'auto' | 'agent';
   streamingCard?: boolean;
+  imCommentary?: boolean;
 }
 
 interface OAuthStatus {
@@ -94,6 +95,7 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
   const [oauthLoading, setOauthLoading] = useState(false);
   const [savingThreadingMode, setSavingThreadingMode] = useState(false);
   const [savingStreamingCard, setSavingStreamingCard] = useState(false);
+  const [savingImCommentary, setSavingImCommentary] = useState(false);
 
   const enabled = config?.enabled ?? false;
 
@@ -395,6 +397,37 @@ export function FeishuChannelCard({ setNotice, setError }: FeishuChannelCardProp
                     }
                   }}
                   aria-label="执行进度卡片"
+                />
+              </div>
+            </div>
+            <div className="pt-3 border-t border-slate-100">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex-1">
+                  <h4 className="text-xs font-semibold text-slate-700">IM 实时解说</h4>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    开启后在 Agent 执行每个工具调用时，自动向飞书发送一条自然语言说明（由 Haiku 生成，8 秒节流）。
+                  </p>
+                </div>
+                <ToggleSwitch
+                  checked={config?.imCommentary ?? false}
+                  disabled={savingImCommentary}
+                  onChange={async (v) => {
+                    setSavingImCommentary(true);
+                    setNotice(null);
+                    setError(null);
+                    try {
+                      const data = await api.put<UserFeishuConfig>('/api/config/user-im/feishu', {
+                        imCommentary: v,
+                      });
+                      setConfig(data);
+                      setNotice(`IM 实时解说已${v ? '开启' : '关闭'}`);
+                    } catch (err) {
+                      setError(getErrorMessage(err, '切换 IM 解说失败'));
+                    } finally {
+                      setSavingImCommentary(false);
+                    }
+                  }}
+                  aria-label="IM 实时解说"
                 />
               </div>
             </div>

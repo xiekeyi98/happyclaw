@@ -220,6 +220,8 @@ interface StoredFeishuProviderConfigV1 {
   replyThreadingMode?: 'auto' | 'agent';
   /** Show real-time execution progress card in Feishu. */
   streamingCard?: boolean;
+  /** Send tool-call IM commentary during long-running tasks. */
+  imCommentary?: boolean;
 }
 
 interface StoredTelegramProviderConfigV1 {
@@ -2330,6 +2332,8 @@ export interface UserFeishuConfig {
   replyThreadingMode?: 'auto' | 'agent';
   /** Show real-time execution progress card in Feishu. */
   streamingCard?: boolean;
+  /** Send tool-call IM commentary during long-running tasks. */
+  imCommentary?: boolean;
 }
 
 export interface UserFeishuOAuthTokens {
@@ -2390,6 +2394,7 @@ export function getUserFeishuConfig(userId: string): UserFeishuConfig | null {
       updatedAt: stored.updatedAt || null,
       replyThreadingMode: stored.replyThreadingMode === 'agent' ? 'agent' : 'auto',
       streamingCard: stored.streamingCard ?? false,
+      imCommentary: stored.imCommentary ?? false,
     };
   } catch (err) {
     logger.warn({ err, userId }, 'Failed to read user Feishu config');
@@ -2408,6 +2413,7 @@ export function saveUserFeishuConfig(
     updatedAt: new Date().toISOString(),
     replyThreadingMode: next.replyThreadingMode === 'agent' ? 'agent' : 'auto',
     streamingCard: next.streamingCard ?? false,
+    imCommentary: next.imCommentary ?? false,
   };
 
   // Preserve existing OAuth tokens when saving IM config
@@ -2421,6 +2427,7 @@ export function saveUserFeishuConfig(
     secret: encryptFeishuSecret({ appSecret: normalized.appSecret }),
     replyThreadingMode: normalized.replyThreadingMode,
     streamingCard: normalized.streamingCard,
+    imCommentary: normalized.imCommentary,
     ...(existing?.oauthSecret ? { oauthSecret: existing.oauthSecret } : {}),
     ...(existing?.oauthAuthorizedAt
       ? { oauthAuthorizedAt: existing.oauthAuthorizedAt }

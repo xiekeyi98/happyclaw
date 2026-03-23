@@ -177,6 +177,7 @@ import {
 import { injectMemoryAgentDeps } from './routes/memory-agent.js';
 import { injectFeishuApiDeps } from './routes/feishu-api.js';
 import { injectMemoryDeps } from './routes/memory.js';
+import { sendToolCommentary } from './im-commentary.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const execFileAsync = promisify(execFile);
@@ -2005,6 +2006,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           // active sessions for this folder, including cards created for
           // IPC-injected Feishu chats that share the same workspace.
           feedProgressSessionsForFolder(group.folder, result.streamEvent);
+
+          // IM Commentary: send human-readable tool explanations to IM (fire-and-forget)
+          const _se = result.streamEvent;
+          if (_se.eventType === 'tool_use_start' && feishuConfig?.imCommentary && sourceChannel) {
+            sendToolCommentary({
+              folder: group.folder,
+              toolName: _se.toolName ?? '',
+              toolInputSummary: _se.toolInputSummary,
+              isNested: _se.isNested ?? false,
+              sendMessage: (text) => imManager.sendMessage(sourceChannel, text).then(() => undefined),
+            }).catch(() => {});
+          }
+
           turnObservabilityManager.feedEvent(
             group.folder,
             result.streamEvent,
@@ -3584,16 +3598,28 @@ async function processTaskIpc(
         }
 
         try {
-          // Resolve to workspace path - IPC sends relative paths from workspace/group
-          const fullPath = path.join(GROUPS_DIR, sourceGroup, data.filePath);
+          let resolvedPath: string;
+          if (path.isAbsolute(data.filePath)) {
+            // Absolute paths are allowed (agent already verified the file exists)
+            resolvedPath = path.resolve(data.filePath);
+          } else {
+            // Relative paths resolved against source group directory
+            const fullPath = path.join(GROUPS_DIR, sourceGroup, data.filePath);
+            resolvedPath = path.resolve(fullPath);
+            const safeRoot = path.resolve(GROUPS_DIR, sourceGroup) + path.sep;
+            if (!resolvedPath.startsWith(safeRoot)) {
+              logger.warn(
+                { sourceGroup, filePath: data.filePath, resolvedPath },
+                'Path traversal attempt blocked in send_file IPC',
+              );
+              break;
+            }
+          }
 
-          // Path traversal protection: ensure resolved path stays within workspace
-          const resolvedPath = path.resolve(fullPath);
-          const safeRoot = path.resolve(GROUPS_DIR, sourceGroup) + path.sep;
-          if (!resolvedPath.startsWith(safeRoot)) {
+          if (!fs.existsSync(resolvedPath)) {
             logger.warn(
               { sourceGroup, filePath: data.filePath, resolvedPath },
-              'Path traversal attempt blocked in send_file IPC',
+              'File not found in send_file IPC',
             );
             break;
           }
@@ -5075,6 +5101,11 @@ async function main(): Promise<void> {
       await queue.shutdown(10000);
     } catch (err) {
       logger.warn({ err }, 'Error shutting down queue');
+    }
+    try {
+      markStaleTurnsAsError();
+    } catch (err) {
+      logger.warn({ err }, 'Error marking stale turns as error');
     }
     try {
       closeDatabase();

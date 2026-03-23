@@ -386,6 +386,7 @@ export const FeishuConfigSchema = z
     enabled: z.boolean().optional(),
     replyThreadingMode: z.enum(['auto', 'agent']).optional(),
     streamingCard: z.boolean().optional(),
+    imCommentary: z.boolean().optional(),
   })
   .refine(
     (data) =>
@@ -394,7 +395,8 @@ export const FeishuConfigSchema = z
       data.clearAppSecret === true ||
       typeof data.enabled === 'boolean' ||
       typeof data.replyThreadingMode === 'string' ||
-      typeof data.streamingCard === 'boolean',
+      typeof data.streamingCard === 'boolean' ||
+      typeof data.imCommentary === 'boolean',
     { message: 'At least one config field must be provided' },
   );
 

@@ -1389,6 +1389,7 @@ configRoutes.get('/user-im/feishu', authMiddleware, (c) => {
         connected,
         replyThreadingMode: 'auto',
         streamingCard: false,
+        imCommentary: false,
       });
     }
     return c.json({
@@ -1396,6 +1397,7 @@ configRoutes.get('/user-im/feishu', authMiddleware, (c) => {
       connected,
       replyThreadingMode: config.replyThreadingMode ?? 'auto',
       streamingCard: config.streamingCard ?? false,
+      imCommentary: config.imCommentary ?? false,
     });
   } catch (err) {
     logger.error({ err }, 'Failed to load user Feishu config');
@@ -1430,13 +1432,14 @@ configRoutes.put('/user-im/feishu', authMiddleware, async (c) => {
   }
 
   const current = getUserFeishuConfig(user.id);
-  const next: { appId: string; appSecret: string; enabled: boolean; updatedAt: string | null; replyThreadingMode?: 'auto' | 'agent'; streamingCard?: boolean } = {
+  const next: { appId: string; appSecret: string; enabled: boolean; updatedAt: string | null; replyThreadingMode?: 'auto' | 'agent'; streamingCard?: boolean; imCommentary?: boolean } = {
     appId: current?.appId || '',
     appSecret: current?.appSecret || '',
     enabled: current?.enabled ?? true,
     updatedAt: current?.updatedAt || null,
     replyThreadingMode: current?.replyThreadingMode ?? 'auto',
     streamingCard: current?.streamingCard ?? false,
+    imCommentary: current?.imCommentary ?? false,
   };
   if (typeof validation.data.appId === 'string') {
     const appId = validation.data.appId.trim();
@@ -1460,6 +1463,9 @@ configRoutes.put('/user-im/feishu', authMiddleware, async (c) => {
   if (typeof validation.data.streamingCard === 'boolean') {
     next.streamingCard = validation.data.streamingCard;
   }
+  if (typeof validation.data.imCommentary === 'boolean') {
+    next.imCommentary = validation.data.imCommentary;
+  }
 
   try {
     const saved = saveUserFeishuConfig(user.id, {
@@ -1468,6 +1474,7 @@ configRoutes.put('/user-im/feishu', authMiddleware, async (c) => {
       enabled: next.enabled,
       replyThreadingMode: next.replyThreadingMode,
       streamingCard: next.streamingCard,
+      imCommentary: next.imCommentary,
     });
 
     // Hot-reload: reconnect user's Feishu channel
@@ -1488,6 +1495,7 @@ configRoutes.put('/user-im/feishu', authMiddleware, async (c) => {
       connected,
       replyThreadingMode: saved.replyThreadingMode ?? 'auto',
       streamingCard: saved.streamingCard ?? false,
+      imCommentary: saved.imCommentary ?? false,
     });
   } catch (err) {
     const message =
@@ -2349,7 +2357,7 @@ configRoutes.post(
 
 // ─── OpenAI Provider Config ──────────────────────────────────
 
-configRoutes.get('/openai', authMiddleware, systemConfigMiddleware, (c) => {
+configRoutes.get('/openai', authMiddleware, systemConfigMiddleware, async (c) => {
   const config = getOpenAIProviderConfig();
   // Mask API key for display: show first 3 and last 4 chars
   let apiKeyMasked: string | null = null;
@@ -2358,14 +2366,54 @@ configRoutes.get('/openai', authMiddleware, systemConfigMiddleware, (c) => {
   } else if (config.apiKey) {
     apiKeyMasked = '***';
   }
+
+  const hasOAuth = !!(config.oauthTokens?.accessToken);
+  let oauthExpired = config.oauthTokens?.expiresAt
+    ? config.oauthTokens.expiresAt < Date.now()
+    : false;
+  let oauthProbeError: string | null = null;
+
+  // Auto-probe: verify token against Codex API (not /me, which returns 403 for Codex tokens)
+  if (hasOAuth && !oauthExpired) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+      const res = await fetch('https://chatgpt.com/backend-api/codex/responses', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${config.oauthTokens!.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-5.4-mini',
+          instructions: '',
+          input: [{ type: 'message', role: 'user', content: 'hi' }],
+          tools: [],
+          stream: false,
+          store: false,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (res.status === 401 || res.status === 403) {
+        oauthExpired = true;
+        oauthProbeError = `Token 无效 (${res.status})`;
+      }
+    } catch (err: unknown) {
+      // Probe failed (network/timeout) — don't mark as expired, just report
+      oauthProbeError = err instanceof Error
+        ? (err.name === 'AbortError' ? '探活超时' : err.message)
+        : String(err);
+    }
+  }
+
   return c.json({
     authMode: config.authMode,
     hasApiKey: !!config.apiKey,
     apiKeyMasked,
-    hasOAuth: !!(config.oauthTokens?.accessToken),
-    oauthExpired: config.oauthTokens?.expiresAt
-      ? config.oauthTokens.expiresAt < Date.now()
-      : false,
+    hasOAuth,
+    oauthExpired,
+    oauthProbeError,
     baseUrl: config.baseUrl || '',
     model: config.model || '',
     proxyUrl: config.proxyUrl || '',
@@ -2477,6 +2525,51 @@ configRoutes.post(
     const actor = (c.get('user') as AuthUser).username;
     logger.info({ actor }, 'OpenAI OAuth disconnected');
     return c.json({ success: true });
+  },
+);
+
+/** Probe OAuth token validity by making a lightweight API call */
+configRoutes.post(
+  '/openai/oauth/probe',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const config = getOpenAIProviderConfig();
+    const accessToken = config.oauthTokens?.accessToken;
+    if (!accessToken) {
+      return c.json({ valid: false, error: '未配置 OAuth Token' });
+    }
+
+    // Check timestamp first
+    if (config.oauthTokens?.expiresAt && config.oauthTokens.expiresAt < Date.now()) {
+      return c.json({ valid: false, error: 'Token 已过期（时间戳判断）' });
+    }
+
+    // Actually probe the API with a minimal request
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15_000); // 15s timeout
+      const res = await fetch('https://chatgpt.com/backend-api/me', {
+        headers: { 'Authorization': `Bearer ${accessToken}` },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      if (res.ok) {
+        return c.json({ valid: true });
+      }
+
+      const body = await res.text().catch(() => '');
+      if (res.status === 401 || res.status === 403) {
+        return c.json({ valid: false, error: `Token 无效 (${res.status})` });
+      }
+      return c.json({ valid: false, error: `API 返回 ${res.status}: ${body.slice(0, 200)}` });
+    } catch (err: unknown) {
+      const msg = err instanceof Error
+        ? (err.name === 'AbortError' ? '探活超时 (15s)' : err.message)
+        : String(err);
+      return c.json({ valid: false, error: msg });
+    }
   },
 );
 
