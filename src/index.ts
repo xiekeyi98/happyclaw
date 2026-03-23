@@ -3627,7 +3627,10 @@ async function processTaskIpc(
       break;
 
     case 'session_wrapup':
-      if (data.userId && data.groupFolder && isHome && memoryAgentManagerRef) {
+      // Allow session_wrapup from home groups OR from any group owned by the same user
+      // (flow workspaces are not home groups but should still trigger wrapup)
+      if (data.userId && data.groupFolder && memoryAgentManagerRef &&
+          (isHome || sourceGroupEntry?.created_by === data.userId)) {
         const allJids = getJidsByFolder(data.groupFolder);
         exportTranscriptsForUser(
           data.userId,
@@ -4991,13 +4994,16 @@ async function main(): Promise<void> {
     const group = registeredGroups[groupJid] ?? getRegisteredGroup(groupJid);
     if (!group?.folder) return;
 
-    // Resolve the home group owner — IM channels (telegram/feishu) share the
-    // folder but have is_home=0, so we look up the home group by folder.
+    // Resolve the user who owns this group for memory wrapup.
+    // Priority: home group owner (for IM channels sharing a folder) > group.created_by
     let userId = group.created_by;
     if (!group.is_home) {
       const homeGroup = getHomeGroupByFolder(group.folder);
-      if (!homeGroup?.created_by) return;
-      userId = homeGroup.created_by;
+      if (homeGroup?.created_by) {
+        userId = homeGroup.created_by;
+      }
+      // If no home group found (e.g. flow workspaces with their own folder),
+      // fall through to use group.created_by directly
     }
     if (!userId) return;
 
