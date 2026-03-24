@@ -171,6 +171,7 @@ export function SystemSettingsSection({ setNotice, setError }: SystemSettingsSec
   const [billingCurrency, setBillingCurrency] = useState('USD');
   const [billingCurrencyRate, setBillingCurrencyRate] = useState(1);
   const [webPublicUrl, setWebPublicUrl] = useState('');
+  const [autoSwitchToOpenAIOnRateLimit, setAutoSwitchToOpenAIOnRateLimit] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -196,6 +197,7 @@ export function SystemSettingsSection({ setNotice, setError }: SystemSettingsSec
         setBillingCurrency(data.billingCurrency ?? 'USD');
         setBillingCurrencyRate(data.billingCurrencyRate ?? 1);
         setWebPublicUrl(data.webPublicUrl ?? '');
+        setAutoSwitchToOpenAIOnRateLimit(data.autoSwitchToOpenAIOnRateLimit ?? false);
       } catch (err) {
         setError(getErrorMessage(err, '加载系统参数失败'));
       } finally {
@@ -243,6 +245,7 @@ export function SystemSettingsSection({ setNotice, setError }: SystemSettingsSec
         billingCurrency,
         billingCurrencyRate,
         webPublicUrl,
+        autoSwitchToOpenAIOnRateLimit,
       };
       for (const f of fields) {
         const val = displayValues[f.key];
@@ -262,6 +265,7 @@ export function SystemSettingsSection({ setNotice, setError }: SystemSettingsSec
       setBillingCurrency(data.billingCurrency ?? 'USD');
       setBillingCurrencyRate(data.billingCurrencyRate ?? 1);
       setWebPublicUrl(data.webPublicUrl ?? '');
+      setAutoSwitchToOpenAIOnRateLimit(data.autoSwitchToOpenAIOnRateLimit ?? false);
       // 刷新计费状态，更新导航栏可见性
       loadBillingStatus();
       setNotice('系统参数已保存，新参数将对后续启动的容器/进程生效');
@@ -456,6 +460,20 @@ export function SystemSettingsSection({ setNotice, setError }: SystemSettingsSec
           <p className="text-xs text-muted-foreground mt-1">
             用于飞书卡片按钮跳转等场景。留空则不生成跳转链接。
           </p>
+        </div>
+        <div className="flex items-center justify-between py-1">
+          <div>
+            <div className="text-sm font-medium text-foreground">限流时自动切换到 OpenAI</div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Claude 触发限流或 overloaded 时自动将当前会话切换为 OpenAI 并重试。需提前配置 OpenAI 认证信息。
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={autoSwitchToOpenAIOnRateLimit}
+            onChange={setAutoSwitchToOpenAIOnRateLimit}
+            aria-label="限流时自动切换到 OpenAI"
+            disabled={!canManage}
+          />
         </div>
       </div>
 

@@ -2551,6 +2551,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     const isRateLimit = /overloaded|limit|rate.?limit|quota|resets/i.test(errorDetail);
     if (
       isRateLimit &&
+      getSystemSettings().autoSwitchToOpenAIOnRateLimit &&
       (effectiveGroup.llm_provider ?? 'claude') === 'claude'
     ) {
       const openaiCfg = getOpenAIProviderConfig();

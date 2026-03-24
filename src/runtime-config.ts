@@ -2908,6 +2908,8 @@ export interface SystemSettings {
   feishuDocDomain: string;
   // Web
   webPublicUrl: string;
+  // OpenAI
+  autoSwitchToOpenAIOnRateLimit: boolean;
 }
 
 const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
@@ -2934,6 +2936,7 @@ const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
   feishuApiDomain: 'open.feishu.cn',
   feishuDocDomain: 'bytedance.larkoffice.com',
   webPublicUrl: '',
+  autoSwitchToOpenAIOnRateLimit: false,
 };
 
 function parseIntEnv(envVar: string | undefined, fallback: number): number {
@@ -3053,6 +3056,10 @@ function readSystemSettingsFromFile(): SystemSettings | null {
       typeof raw.webPublicUrl === 'string'
         ? raw.webPublicUrl
         : DEFAULT_SYSTEM_SETTINGS.webPublicUrl,
+    autoSwitchToOpenAIOnRateLimit:
+      typeof raw.autoSwitchToOpenAIOnRateLimit === 'boolean'
+        ? raw.autoSwitchToOpenAIOnRateLimit
+        : DEFAULT_SYSTEM_SETTINGS.autoSwitchToOpenAIOnRateLimit,
   };
 }
 
@@ -3138,6 +3145,7 @@ function buildEnvFallbackSettings(): SystemSettings {
       process.env.FEISHU_DOC_DOMAIN || DEFAULT_SYSTEM_SETTINGS.feishuDocDomain,
     webPublicUrl:
       process.env.WEB_PUBLIC_URL || DEFAULT_SYSTEM_SETTINGS.webPublicUrl,
+    autoSwitchToOpenAIOnRateLimit: DEFAULT_SYSTEM_SETTINGS.autoSwitchToOpenAIOnRateLimit,
   };
 }
 
