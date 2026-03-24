@@ -87,6 +87,7 @@ export interface SystemSettings {
   turnMaxBatchMs: number;
   traceRetentionDays: number;
   webPublicUrl: string;
+  autoSwitchToOpenAIOnRateLimit: boolean;
 }
 
 export type SettingsTab = 'claude' | 'openai' | 'registration' | 'appearance' | 'system' | 'profile' | 'my-channels' | 'security' | 'groups' | 'memory' | 'skills' | 'mcp-servers' | 'agent-definitions' | 'users' | 'about' | 'bindings';

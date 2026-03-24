@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, Loader2, MessageSquare, SkipForward } from 'lucide-react';
+import { ArrowRight, Loader2, MessageSquare, QrCode, SkipForward } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { Input } from '@/components/ui/input';
@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { useAuthStore } from '../stores/auth';
 import { api } from '../api/client';
 import { getErrorMessage } from '../components/settings/types';
+import { WeChatQRDialog } from '../components/settings/WeChatQRDialog';
 
 export function SetupChannelsPage() {
   const navigate = useNavigate();
@@ -25,6 +26,10 @@ export function SetupChannelsPage() {
   // QQ
   const [qqAppId, setQqAppId] = useState('');
   const [qqAppSecret, setQqAppSecret] = useState('');
+
+  // WeChat
+  const [wechatQROpen, setWechatQROpen] = useState(false);
+  const [wechatConnected, setWechatConnected] = useState(false);
 
   useEffect(() => {
     if (user === null && initialized === true) {
@@ -91,7 +96,7 @@ export function SetupChannelsPage() {
 
       navigate('/chat', { replace: true });
     } catch (err) {
-      setError(getErrorMessage(err, '保存消息通道配置失败'));
+      setError(getErrorMessage(err, '保存消息渠道配置失败'));
     } finally {
       setSaving(false);
     }
@@ -104,7 +109,7 @@ export function SetupChannelsPage() {
           <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
             <MessageSquare className="w-6 h-6 text-primary" />
           </div>
-          <h1 className="text-2xl font-bold text-foreground mb-2">配置消息通道（可选）</h1>
+          <h1 className="text-2xl font-bold text-foreground mb-2">配置消息渠道（可选）</h1>
           <p className="text-sm text-muted-foreground">
             绑定飞书或 Telegram，即可通过 IM 与 AI 对话。跳过后也可在设置中随时配置。
           </p>
@@ -187,6 +192,24 @@ export function SetupChannelsPage() {
           </div>
         </section>
 
+        {/* WeChat */}
+        <section className="bg-card rounded-xl border border-border shadow-sm p-5">
+          <h2 className="text-base font-semibold text-foreground mb-3">微信</h2>
+          <p className="text-xs text-muted-foreground mb-3">
+            扫描二维码登录微信，绑定后即可在微信中与 AI 对话。
+          </p>
+          {wechatConnected ? (
+            <div className="flex items-center gap-2 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-700 font-medium">
+              微信已登录
+            </div>
+          ) : (
+            <Button variant="outline" onClick={() => setWechatQROpen(true)}>
+              <QrCode className="w-4 h-4" />
+              扫码登录微信
+            </Button>
+          )}
+        </section>
+
         {/* Actions */}
         <div className="flex flex-col sm:flex-row gap-3 justify-end">
           <Button variant="outline" onClick={handleSkip}>
@@ -199,6 +222,15 @@ export function SetupChannelsPage() {
             <ArrowRight className="w-4 h-4" />
           </Button>
         </div>
+
+        <WeChatQRDialog
+          isOpen={wechatQROpen}
+          onClose={() => setWechatQROpen(false)}
+          onSuccess={() => {
+            setWechatQROpen(false);
+            setWechatConnected(true);
+          }}
+        />
       </div>
     </div>
   );
