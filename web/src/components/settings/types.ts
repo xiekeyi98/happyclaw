@@ -88,6 +88,8 @@ export interface SystemSettings {
   traceRetentionDays: number;
   webPublicUrl: string;
   autoSwitchToOpenAIOnRateLimit: boolean;
+  defaultClaudeModel: string;
+  defaultOpenAIModel: string;
 }
 
 export type SettingsTab = 'claude' | 'openai' | 'registration' | 'appearance' | 'system' | 'profile' | 'my-channels' | 'security' | 'groups' | 'memory' | 'skills' | 'mcp-servers' | 'agent-definitions' | 'users' | 'about' | 'bindings';
