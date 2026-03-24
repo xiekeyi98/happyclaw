@@ -1740,8 +1740,9 @@ export function buildClaudeEnvLines(config: ClaudeProviderConfig): string[] {
       `ANTHROPIC_AUTH_TOKEN=${sanitizeEnvValue(config.anthropicAuthToken)}`,
     );
   }
-  if (config.happyclawModel) {
-    lines.push(`HAPPYCLAW_MODEL=${sanitizeEnvValue(config.happyclawModel)}`);
+  const effectiveModel = config.happyclawModel || getSystemSettings().defaultClaudeModel;
+  if (effectiveModel) {
+    lines.push(`HAPPYCLAW_MODEL=${sanitizeEnvValue(effectiveModel)}`);
   }
 
   const customEnv = getActiveProfileCustomEnv();
@@ -2018,13 +2019,23 @@ export function buildContainerEnvLines(
   global: ClaudeProviderConfig,
   override: ContainerEnvConfig,
 ): string[] {
-  const merged = mergeClaudeEnvConfig(global, override);
+  // If workspace specifies ANTHROPIC_MODEL in customEnv, promote it to
+  // happyclawModel so it takes priority over the global default
+  // (agent-runner reads HAPPYCLAW_MODEL first).
+  const workspaceModel = override.customEnv?.['ANTHROPIC_MODEL'];
+  const effectiveOverride = workspaceModel
+    ? { ...override, happyclawModel: workspaceModel }
+    : override;
+
+  const merged = mergeClaudeEnvConfig(global, effectiveOverride);
   const lines = buildClaudeEnvLines(merged);
 
   // Append custom env vars (with safety sanitization as defense-in-depth)
   if (override.customEnv) {
     for (const [key, value] of Object.entries(override.customEnv)) {
       if (!key || value === undefined) continue;
+      // Skip ANTHROPIC_MODEL — already promoted to HAPPYCLAW_MODEL above
+      if (key === 'ANTHROPIC_MODEL') continue;
       if (!ENV_KEY_RE.test(key)) {
         logger.warn(
           { key },
@@ -2924,6 +2935,9 @@ export interface SystemSettings {
   webPublicUrl: string;
   // OpenAI
   autoSwitchToOpenAIOnRateLimit: boolean;
+  // Global default models (workspace-level overrides these)
+  defaultClaudeModel: string;
+  defaultOpenAIModel: string;
 }
 
 const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
@@ -2951,6 +2965,8 @@ const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
   feishuDocDomain: 'bytedance.larkoffice.com',
   webPublicUrl: '',
   autoSwitchToOpenAIOnRateLimit: false,
+  defaultClaudeModel: '',
+  defaultOpenAIModel: '',
 };
 
 function parseIntEnv(envVar: string | undefined, fallback: number): number {
@@ -3074,6 +3090,14 @@ function readSystemSettingsFromFile(): SystemSettings | null {
       typeof raw.autoSwitchToOpenAIOnRateLimit === 'boolean'
         ? raw.autoSwitchToOpenAIOnRateLimit
         : DEFAULT_SYSTEM_SETTINGS.autoSwitchToOpenAIOnRateLimit,
+    defaultClaudeModel:
+      typeof raw.defaultClaudeModel === 'string'
+        ? raw.defaultClaudeModel.trim()
+        : DEFAULT_SYSTEM_SETTINGS.defaultClaudeModel,
+    defaultOpenAIModel:
+      typeof raw.defaultOpenAIModel === 'string'
+        ? raw.defaultOpenAIModel.trim()
+        : DEFAULT_SYSTEM_SETTINGS.defaultOpenAIModel,
   };
 }
 
@@ -3160,6 +3184,8 @@ function buildEnvFallbackSettings(): SystemSettings {
     webPublicUrl:
       process.env.WEB_PUBLIC_URL || DEFAULT_SYSTEM_SETTINGS.webPublicUrl,
     autoSwitchToOpenAIOnRateLimit: DEFAULT_SYSTEM_SETTINGS.autoSwitchToOpenAIOnRateLimit,
+    defaultClaudeModel: process.env.DEFAULT_CLAUDE_MODEL || DEFAULT_SYSTEM_SETTINGS.defaultClaudeModel,
+    defaultOpenAIModel: process.env.DEFAULT_OPENAI_MODEL || DEFAULT_SYSTEM_SETTINGS.defaultOpenAIModel,
   };
 }
 

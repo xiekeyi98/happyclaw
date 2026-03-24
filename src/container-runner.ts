@@ -1076,8 +1076,9 @@ export async function runHostAgent(
     if (openaiConfig.baseUrl) {
       hostEnv['OPENAI_BASE_URL'] = openaiConfig.baseUrl;
     }
-    if (openaiConfig.model) {
-      hostEnv['OPENAI_MODEL'] = openaiConfig.model;
+    const effectiveOpenAIModel = openaiConfig.model || getSystemSettings().defaultOpenAIModel;
+    if (effectiveOpenAIModel) {
+      hostEnv['OPENAI_MODEL'] = effectiveOpenAIModel;
     }
   }
 

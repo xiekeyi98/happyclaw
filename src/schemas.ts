@@ -252,6 +252,8 @@ export const SystemSettingsSchema = z.object({
   feishuDocDomain: z.string().min(1).max(100).optional(),
   webPublicUrl: z.string().max(200).optional(),
   autoSwitchToOpenAIOnRateLimit: z.boolean().optional(),
+  defaultClaudeModel: z.string().max(100).optional(),
+  defaultOpenAIModel: z.string().max(100).optional(),
 });
 
 export const AppearanceConfigSchema = z.object({
