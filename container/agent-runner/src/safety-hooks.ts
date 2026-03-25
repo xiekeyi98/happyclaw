@@ -10,6 +10,12 @@
  *    - Tracks recent tool call fingerprints
  *    - Detects repetitive patterns (same command retried, same error recurring)
  *    - Calls GPT to suggest alternative approaches when stuck
+ *
+ * 3. PostToolUse: Invalid image detector
+ *    - After Read tool returns, checks if the response contains image blocks
+ *    - Validates image data via magic bytes (PNG/JPEG/GIF/WebP headers)
+ *    - Warns agent if a file with image extension contains non-image data
+ *    - Prevents corrupted "images" from poisoning the conversation history
  */
 
 import type {
@@ -19,6 +25,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 
 import { callLlm, getLlmCredentials, hasLlmCredentials, type LlmCredentials } from './gpt-client.js';
+import { detectImageMimeTypeFromBase64Strict } from './image-detector.js';
 import {
   assessBashRisk,
   assessEditWriteRisk,
@@ -325,4 +332,107 @@ export function createLoopRecoveryHook(log: (msg: string) => void): HookCallback
       },
     };
   };
+}
+
+// ─── Invalid Image Detector ────────────────────────────────────────
+
+/**
+ * PostToolUse: Invalid image detector.
+ * After Read tool reads a file with image extension, validates the response
+ * contains actual image data (via magic bytes). If the file is not a real image
+ * (e.g. an API error response saved as .png), warns the agent to prevent
+ * corrupted "images" from poisoning the conversation history.
+ *
+ * Background: Feishu image download API can return error JSON while curl -o
+ * saves it as .png. SDK Read tool then embeds this as base64 "image" in
+ * conversation. On session resume, Claude API rejects with "Could not process
+ * image" and the session becomes permanently broken.
+ */
+export function createImageValidationHook(log: (msg: string) => void): HookCallback {
+  const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|webp|bmp|tiff?|avif|svg|ico)$/i;
+
+  return async (input, _toolUseId, _options) => {
+    const hookInput = input as PostToolUseHookInput;
+
+    // Only check Read tool
+    if (hookInput.tool_name !== 'Read') return {};
+
+    // Check if the file has an image extension
+    const toolInput = hookInput.tool_input as { file_path?: string } | undefined;
+    const filePath = toolInput?.file_path;
+    if (!filePath || !IMAGE_EXTENSIONS.test(filePath)) return {};
+
+    // Check if the response contains image blocks with invalid data
+    const response = hookInput.tool_response;
+    const invalidImages = findInvalidImageBlocks(response);
+
+    if (invalidImages.length === 0) return {};
+
+    const warning = [
+      `⚠️ **假图片检测**: \`${filePath}\` 文件扩展名是图片格式，但内容不是有效图片数据。`,
+      `检测到 ${invalidImages.length} 个无效 image block。`,
+      `这些假图片会污染会话历史，导致 session resume 时报 "Could not process image" 错误。`,
+      ``,
+      `**建议**：`,
+      `1. 不要 Read 这个文件（它可能是 API 错误响应被错误保存为图片）`,
+      `2. 用 \`file ${filePath}\` 命令检查文件实际类型`,
+      `3. 如果是下载失败的图片，重新下载并验证 Content-Type`,
+    ].join('\n');
+
+    log(`[image-validator] Invalid image detected in ${filePath}: ${invalidImages.length} block(s)`);
+
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse' as const,
+        additionalContext: warning,
+      },
+    };
+  };
+}
+
+/**
+ * Scan a tool_response value for image blocks with invalid base64 data.
+ * The response structure from Read can be nested; we do a recursive search.
+ */
+function findInvalidImageBlocks(obj: unknown): string[] {
+  const invalid: string[] = [];
+
+  function walk(node: unknown): void {
+    if (!node || typeof node !== 'object') return;
+
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+
+    const record = node as Record<string, unknown>;
+
+    // Check if this is an image block with base64 source
+    if (
+      record.type === 'image' &&
+      typeof record.source === 'object' &&
+      record.source !== null
+    ) {
+      const source = record.source as Record<string, unknown>;
+      if (source.type === 'base64' && typeof source.data === 'string') {
+        const detected = detectImageMimeTypeFromBase64Strict(source.data);
+        if (!detected) {
+          // Base64 data doesn't match any known image format
+          const preview = Buffer.from(
+            (source.data as string).slice(0, 40),
+            'base64',
+          ).toString('utf-8').slice(0, 30);
+          invalid.push(`media_type=${String(source.media_type)}, preview="${preview}..."`);
+        }
+      }
+    }
+
+    // Recurse into all values
+    for (const value of Object.values(record)) {
+      walk(value);
+    }
+  }
+
+  walk(obj);
+  return invalid;
 }
