@@ -18,6 +18,10 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execFile as execFileCb } from 'child_process';
+import { promisify } from 'util';
+
+const execFile = promisify(execFileCb);
 import type {
   HookCallback,
   PostToolUseHookInput,
@@ -395,6 +399,53 @@ ${diffContent}
 
 // ─── Service Context Resolution ──────────────────────────
 
+/**
+ * Resolve service context via an external command (local provider).
+ * The command receives a JSON string as argv[1] with { changedFiles, maxChars }.
+ * It should output JSON: { service, context, confidence }.
+ * Never throws — fails silently with logging.
+ *
+ * Enable by setting HAPPYCLAW_REVIEW_CONTEXT_CMD to the absolute path of a local script.
+ * All matching rules, data files, and sanitization live outside this repository.
+ */
+async function resolveServiceContext(
+  mutations: MutationRecord[],
+  log: (msg: string) => void,
+): Promise<string> {
+  const cmd = process.env.HAPPYCLAW_REVIEW_CONTEXT_CMD;
+  if (!cmd) return '';
+
+  try {
+    const changedFiles = mutations.map(m => m.filePath).filter(Boolean);
+    if (changedFiles.length === 0) return '';
+
+    const input = JSON.stringify({ changedFiles, maxChars: 3000 });
+    const { stdout } = await execFile(cmd, [input], {
+      timeout: 5000,
+      maxBuffer: 64 * 1024,
+      env: { ...process.env },
+    });
+
+    const result = JSON.parse(stdout.trim());
+    const confidence = typeof result.confidence === 'number' ? result.confidence : 0;
+    if (confidence < 0.7 || !result.context) {
+      log(`[review-context] skipped: confidence=${confidence}`);
+      return '';
+    }
+
+    // Truncate to maxChars as a safety net
+    const context = typeof result.context === 'string'
+      ? result.context.slice(0, 3000)
+      : '';
+
+    log(`[review-context] service=${result.service ?? 'unknown'} len=${context.length} confidence=${confidence}`);
+    return context;
+  } catch (err) {
+    log(`[review-context] error: ${err instanceof Error ? err.message : String(err)}`);
+    return '';
+  }
+}
+
 // ─── Incremental Review ───────────────────────────────────
 
 /**
@@ -419,7 +470,8 @@ async function tryIncrementalReview(
   log(`[review-incremental] Triggered: ${classification.totalFiles} files, +${classification.totalLinesAdded}/-${classification.totalLinesRemoved}`);
 
   try {
-    const reviewText = await callGptReview(creds, classification, mutations);
+    const serviceContext = await resolveServiceContext(mutations, log);
+    const reviewText = await callGptReview(creds, classification, mutations, serviceContext || undefined);
     const text = `🔴 **GPT 增量评审** (重大变更: ${classification.totalFiles}文件, +${classification.totalLinesAdded}/-${classification.totalLinesRemoved})\n\n${reviewText}`;
     writeIpcMessage(ipcOutputDir, chatJid, text);
     log(`[review-incremental] Review completed`);
@@ -537,7 +589,8 @@ export function createStopReviewHook(
     }
 
     try {
-      const reviewText = await callGptReview(creds, classification, mutations);
+      const serviceContext = await resolveServiceContext(mutations, log);
+      const reviewText = await callGptReview(creds, classification, mutations, serviceContext || undefined);
 
       const levelEmoji = classification.level === 'major' ? '🔴' : '🟡';
       const levelLabel = classification.level === 'major' ? '重大' : '中等';
