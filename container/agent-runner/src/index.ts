@@ -19,7 +19,7 @@ import path from 'path';
 import { query, HookCallback, PreCompactHookInput, createSdkMcpServer, PermissionMode } from '@anthropic-ai/claude-agent-sdk';
 import { detectImageMimeTypeFromBase64Strict } from './image-detector.js';
 import { createPostToolUseReviewHook, createStopReviewHook } from './review-hooks.js';
-import { createGatekeeperHook, createLoopRecoveryHook } from './safety-hooks.js';
+import { createGatekeeperHook, createLoopRecoveryHook, createImageValidationHook } from './safety-hooks.js';
 
 import type {
   ContainerInput,
@@ -1104,7 +1104,7 @@ async function runQuery(
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(isHome, isAdminHome, containerInput.groupFolder, containerInput.userId)] }],
         PreToolUse: [{ hooks: [createGatekeeperHook(log)] }],
-        PostToolUse: [{ hooks: [createPostToolUseReviewHook(WORKSPACE_IPC, path.join(WORKSPACE_IPC, 'messages'), containerInput.chatJid, log), createLoopRecoveryHook(log)] }],
+        PostToolUse: [{ hooks: [createPostToolUseReviewHook(WORKSPACE_IPC, path.join(WORKSPACE_IPC, 'messages'), containerInput.chatJid, log), createLoopRecoveryHook(log), createImageValidationHook(log)] }],
         Stop: [{ hooks: [createStopReviewHook(
           WORKSPACE_IPC,
           path.join(WORKSPACE_IPC, 'messages'),
